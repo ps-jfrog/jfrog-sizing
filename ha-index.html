@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>JFrog Platform Deployment (JPD) Sizing Calculator</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1f232c;
+    --border: #2a2f3a;
+    --text: #e6e8ee;
+    --muted: #9aa3b2;
+    --accent: #40bf6a;
+    --accent-2: #2a8f4d;
+    --warn: #f5a623;
+    --danger: #e74c3c;
+    --chip: #232836;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  header {
+    padding: 22px 32px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #11151c 0%, #0f1115 100%);
+  }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .layout {
+    display: grid;
+    grid-template-columns: 420px 1fr;
+    gap: 24px;
+    padding: 24px 32px;
+  }
+  @media (max-width: 960px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .panel h2 {
+    margin: 0 0 14px;
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+  .field input[type="number"],
+  .field select {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 11px;
+    color: var(--text);
+    font-size: 14px;
+    font-family: inherit;
+  }
+  .field input[type="number"]:focus,
+  .field select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .hint {
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 4px;
+  }
+  .radio-group {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .radio-group.quad { grid-template-columns: 1fr 1fr; }
+  .radio-group label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text);
+    margin: 0;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .radio-group label:hover { border-color: #3a4151; }
+  .radio-group input[type="radio"] { accent-color: var(--accent); margin: 0; }
+  .radio-group label.checked {
+    border-color: var(--accent);
+    background: rgba(64, 191, 106, 0.08);
+  }
+  .checkbox-group {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .checkbox-group label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text);
+    margin: 0;
+  }
+  .checkbox-group input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
+  button.calc {
+    width: 100%;
+    background: var(--accent);
+    color: #0a1410;
+    font-weight: 600;
+    border: none;
+    border-radius: 6px;
+    padding: 12px;
+    cursor: pointer;
+    font-size: 14px;
+    margin-top: 6px;
+  }
+  button.calc:hover { background: var(--accent-2); color: #fff; }
+  .output { display: flex; flex-direction: column; gap: 16px; }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 720px) {
+    .summary-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  .stat {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .stat .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .stat .value { font-size: 22px; font-weight: 600; }
+  .stat .unit { color: var(--muted); font-size: 13px; font-weight: 400; margin-left: 4px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table th, table td {
+    text-align: left;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  table th {
+    color: var(--muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    background: var(--panel-2);
+  }
+  table tr:last-child td { border-bottom: none; }
+  .chip {
+    display: inline-block;
+    background: var(--chip);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    margin-right: 4px;
+  }
+  .chip.warn { color: var(--warn); border-color: #4a3a1f; background: #2a230f; }
+  .chip.danger { color: var(--danger); border-color: #4a2120; background: #2a1010; }
+  .chip.ok { color: var(--accent); border-color: #1f4a2c; background: #0f2a17; }
+  .notice {
+    border-left: 3px solid var(--warn);
+    background: rgba(245, 166, 35, 0.08);
+    padding: 10px 14px;
+    border-radius: 4px;
+    font-size: 13px;
+    color: #f0d28a;
+  }
+  .notice.danger { border-left-color: var(--danger); background: rgba(231, 76, 60, 0.08); color: #f5b6b1; }
+  .notice.info   { border-left-color: #4a90e2; background: rgba(74, 144, 226, 0.08); color: #b3d1f0; }
+  .notice.ok     { border-left-color: var(--accent); background: rgba(64, 191, 106, 0.08); color: #b6e8c5; }
+  .totals { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px; }
+  .total-card {
+    background: linear-gradient(180deg, #1c2129 0%, #171a21 100%);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .total-card .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); margin-bottom: 6px;
+  }
+  .total-card .value { font-size: 18px; font-weight: 600; }
+  details {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+  }
+  details summary {
+    cursor: pointer; color: var(--muted); font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500;
+  }
+  details[open] summary { margin-bottom: 8px; }
+  details p { margin: 4px 0; font-size: 12px; color: var(--muted); }
+  footer {
+    color: var(--muted); font-size: 11px; text-align: center;
+    padding: 16px 32px; border-top: 1px solid var(--border);
+  }
+  footer a { color: var(--muted); }
+  .placeholder { color: var(--muted); font-size: 13px; padding: 24px; text-align: center; }
+  blockquote {
+    margin: 4px 0; padding: 6px 10px;
+    border-left: 2px solid var(--accent); color: var(--muted);
+    font-style: italic; font-size: 12px; background: rgba(64,191,106,0.04);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>JFrog Platform Deployment (JPD) Sizing Calculator</h1>
+  <p>Sizing based on the JFrog self-managed reference architecture &amp; hardware sizing matrix. Per-cloud instance types, replica counts, storage and co-location rules are pulled verbatim from JFrog's published tables.</p>
+</header>
+
+<div class="layout">
+
+  <!-- INPUT PANEL -->
+  <div class="panel" id="inputs">
+    <h2>Inputs</h2>
+
+    <div class="field">
+      <label>Target environment</label>
+      <div class="radio-group quad" data-name="cloud">
+        <label><input type="radio" name="cloud" value="aws" checked /> AWS</label>
+        <label><input type="radio" name="cloud" value="azure" /> Azure</label>
+        <label><input type="radio" name="cloud" value="gcp" /> GCP</label>
+        <label><input type="radio" name="cloud" value="onprem" /> Private DC</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Deployment model</label>
+      <div class="radio-group" data-name="deployment">
+        <label><input type="radio" name="deployment" value="vm" checked /> Virtual Machines</label>
+        <label><input type="radio" name="deployment" value="k8s" /> Kubernetes</label>
+      </div>
+    </div>
+
+    <div class="field" id="k8sPlacementField" style="display:none;">
+      <label>Kubernetes placement (HA strategy)</label>
+      <div class="radio-group" data-name="k8sPlacement">
+        <label><input type="radio" name="k8sPlacement" value="dedicated" checked /> Dedicated node pool</label>
+        <label><input type="radio" name="k8sPlacement" value="antiaffinity" /> Anti-affinity (shared pool)</label>
+      </div>
+      <div class="hint">Dedicated: one pod per node (mirrors VM model). Anti-affinity: pods can share a pool with other workloads, but <code>podAntiAffinity</code> keeps Artifactory replicas off the same node.</div>
+    </div>
+
+    <div class="field">
+      <label>Topology</label>
+      <div class="radio-group" data-name="topology">
+        <label><input type="radio" name="topology" value="single" checked /> Single active cluster</label>
+        <label><input type="radio" name="topology" value="active-passive" /> Active + Passive (DR)</label>
+      </div>
+    </div>
+
+    <div class="field" id="passiveScaleField" style="display:none;">
+      <label>Passive site scale</label>
+      <div class="radio-group" data-name="passiveScale">
+        <label><input type="radio" name="passiveScale" value="hot" checked /> Hot (mirror)</label>
+        <label><input type="radio" name="passiveScale" value="warm" /> Warm (minimal)</label>
+      </div>
+      <div class="hint">Hot: identical replica count for instant failover. Warm: 1 replica per component (RabbitMQ 3 for quorum) with full DB; scale up on failover.</div>
+    </div>
+
+    <div class="field">
+      <label>Active concurrent clients (Artifactory)</label>
+      <input type="number" id="activeClients" min="0" value="80" />
+      <div class="hint">Hardware sizing matrix tiers: ≤20, ≤100, ≤200, &gt;200 (support).</div>
+    </div>
+
+    <div class="field">
+      <label>Requests per minute (RPM) — peak</label>
+      <input type="number" id="rpm" min="0" value="20000" />
+      <div class="hint">Reference architecture tiers: Small ≤6K, Medium ≤50K, Large ≤100K, XLarge ≤200K, 2XLarge ≤500K.</div>
+    </div>
+
+    <div class="field">
+      <label>Storage required for binaries (TB)</label>
+      <input type="number" id="binaryStorageTB" min="0" step="0.5" value="5" />
+      <div class="hint">Total artifact / binary footprint. Object storage is recommended in cloud.</div>
+    </div>
+
+    <div class="field">
+      <label>Estimated indexed artifacts (Xray)</label>
+      <select id="xrayArtifacts">
+        <option value="0">No Xray</option>
+        <option value="100000" selected>Up to 100K</option>
+        <option value="1000000">Up to 1M</option>
+        <option value="2000000">Up to 2M</option>
+        <option value="10000000">Up to 10M</option>
+        <option value="20000000">Over 10M (support)</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>High Availability (HA)</label>
+      <div class="radio-group" data-name="ha">
+        <label><input type="radio" name="ha" value="yes" checked /> Multi-replica</label>
+        <label><input type="radio" name="ha" value="no" /> Single replica</label>
+      </div>
+      <div class="hint">Multi-replica uses JFrog-published replica counts per tier (1/2/3/4/6 for Artifactory).</div>
+    </div>
+
+    <div class="field">
+      <label>Optional JFrog services</label>
+      <div class="checkbox-group">
+        <label><input type="checkbox" id="svcDistribution" /> Distribution</label>
+        <label><input type="checkbox" id="svcJAS" /> JAS (Advanced Security)</label>
+        <label><input type="checkbox" id="svcWorkers" checked /> Workers</label>
+        <label><input type="checkbox" id="svcAppTrust" /> AppTrust + UnifiedPolicy</label>
+        <label><input type="checkbox" id="svcMissionControl" /> Mission Control</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Database</label>
+      <div class="radio-group" data-name="db">
+        <label><input type="radio" name="db" value="managed" checked /> Managed (RDS/Cloud SQL/Flexible)</label>
+        <label><input type="radio" name="db" value="self" /> Self-hosted PostgreSQL</label>
+      </div>
+    </div>
+
+    <button class="calc" id="calcBtn">Calculate sizing</button>
+  </div>
+
+  <!-- OUTPUT PANEL -->
+  <div class="output" id="output">
+    <div class="panel"><div class="placeholder">Fill out the inputs to see results.</div></div>
+  </div>
+
+</div>
+
+<footer>
+  References:
+  <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/" target="_blank">Reference Architecture</a> &middot;
+  <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/aws/" target="_blank">AWS</a> &middot;
+  <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/azure/" target="_blank">Azure</a> &middot;
+  <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/gcp/" target="_blank">GCP</a> &middot;
+  <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/storage/" target="_blank">Storage</a> &middot;
+  <a href="https://docs.jfrog.com/installation/docs/hardware-sizing-matrix" target="_blank">Hardware Sizing Matrix</a>.
+  Validate with your JFrog SE before procurement.
+</footer>
+
+<script>
+/* =========================================================================
+   JFrog reference architecture data — verbatim from published JFrog tables.
+   Sources:
+     - jfrog.com/reference-architecture/self-managed/deployment/sizing/{aws,azure,gcp}/
+     - jfrog.com/reference-architecture/self-managed/deployment/sizing/storage/
+     - docs.jfrog.com/installation/docs/hardware-sizing-matrix
+   ========================================================================= */
+
+const TIER_ORDER = ["small", "medium", "large", "xlarge", "2xlarge"];
+const TIER_LABEL = { small:"Small", medium:"Medium", large:"Large", xlarge:"XLarge", "2xlarge":"2XLarge" };
+
+// Tier classification from RPM + concurrent connection caps (reference architecture).
+const TIER_RPM = {
+  small:     { maxRpm: 6000,   maxConns: 100  },
+  medium:    { maxRpm: 50000,  maxConns: 500  },
+  large:     { maxRpm: 100000, maxConns: 1200 },
+  xlarge:    { maxRpm: 200000, maxConns: 3000 },
+  "2xlarge": { maxRpm: 500000, maxConns: 6000 }
+};
+
+// Map active clients → suggested tier using the hardware sizing matrix breakpoints.
+function tierFromClients(c) {
+  if (c <= 20)  return "small";
+  if (c <= 100) return "medium";
+  if (c <= 200) return "large";
+  return "2xlarge"; // contact support beyond
+}
+function tierFromRpm(rpm) {
+  if (rpm <= 6000)   return "small";
+  if (rpm <= 50000)  return "medium";
+  if (rpm <= 100000) return "large";
+  if (rpm <= 200000) return "xlarge";
+  return "2xlarge";
+}
+function maxTier(a, b) {
+  return TIER_ORDER.indexOf(a) >= TIER_ORDER.indexOf(b) ? a : b;
+}
+
+// Replicas per tier per component (reference architecture, identical across clouds).
+const REPLICAS = {
+  artifactory: { small:1, medium:2, large:3, xlarge:4, "2xlarge":6 },
+  nginx:       { small:1, medium:2, large:2, xlarge:2, "2xlarge":3 },
+  xray:        { small:1, medium:2, large:2, xlarge:2, "2xlarge":3 },
+  rabbitmq:    { small:1, medium:3, large:3, xlarge:3, "2xlarge":3 },
+  jas:         { small:1, medium:1, large:1, xlarge:1, "2xlarge":1 }
+};
+
+// JFrog-published instance types per cloud per tier per component.
+const REF_ARCH = {
+  aws: {
+    artifactory: {
+      small:     { instance:"m8g.2xlarge", cpu:8,  memGB:32 },
+      medium:    { instance:"m8g.2xlarge", cpu:8,  memGB:32 },
+      large:     { instance:"m8g.4xlarge", cpu:16, memGB:64 },
+      xlarge:    { instance:"m8g.4xlarge", cpu:16, memGB:64 },
+      "2xlarge": { instance:"m8g.4xlarge", cpu:16, memGB:64 }
+    },
+    nginx: {
+      small:     { instance:"c8g.xlarge",  cpu:4, memGB:8  },
+      medium:    { instance:"c8g.xlarge",  cpu:4, memGB:8  },
+      large:     { instance:"c8g.xlarge",  cpu:4, memGB:8  },
+      xlarge:    { instance:"c8g.2xlarge", cpu:8, memGB:16 },
+      "2xlarge": { instance:"c8g.2xlarge", cpu:8, memGB:16 }
+    },
+    xray: {
+      small:     { instance:"c8g.2xlarge", cpu:8, memGB:16 },
+      medium:    { instance:"m8g.2xlarge", cpu:8, memGB:32 },
+      large:     { instance:"m8g.2xlarge", cpu:8, memGB:32 },
+      xlarge:    { instance:"m8g.2xlarge", cpu:8, memGB:32 },
+      "2xlarge": { instance:"m8g.2xlarge", cpu:8, memGB:32 }
+    },
+    rabbitmq: {
+      small:     { instance:"c8g.xlarge", cpu:4, memGB:8 },
+      medium:    { instance:"c8g.xlarge", cpu:4, memGB:8 },
+      large:     { instance:"c8g.xlarge", cpu:4, memGB:8 },
+      xlarge:    { instance:"c8g.xlarge", cpu:4, memGB:8 },
+      "2xlarge": { instance:"c8g.xlarge", cpu:4, memGB:8 }
+    },
+    jas: {
+      small:     { instance:"m8g.2xlarge", cpu:8, memGB:32 },
+      medium:    { instance:"m8g.2xlarge", cpu:8, memGB:32 },
+      large:     { instance:"m8g.2xlarge", cpu:8, memGB:32 },
+      xlarge:    { instance:"m8g.2xlarge", cpu:8, memGB:32 },
+      "2xlarge": { instance:"m8g.2xlarge", cpu:8, memGB:32 }
+    },
+    artifactoryDb: {
+      small:     { instance:"db.m8g.2xlarge",  cpu:8,  memGB:32,  maxConns:100  },
+      medium:    { instance:"db.m8g.4xlarge",  cpu:16, memGB:64,  maxConns:200  },
+      large:     { instance:"db.m8g.8xlarge",  cpu:32, memGB:128, maxConns:600  },
+      xlarge:    { instance:"db.m8g.12xlarge", cpu:48, memGB:192, maxConns:2000 },
+      "2xlarge": { instance:"db.m8g.16xlarge", cpu:64, memGB:256, maxConns:5000 }
+    },
+    xrayDb: {
+      small:     { instance:"db.m8g.xlarge",   cpu:4,  memGB:16,  maxConns:200  },
+      medium:    { instance:"db.m8g.2xlarge",  cpu:8,  memGB:32,  maxConns:500  },
+      large:     { instance:"db.m8g.4xlarge",  cpu:16, memGB:64,  maxConns:600  },
+      xlarge:    { instance:"db.m8g.8xlarge",  cpu:32, memGB:128, maxConns:1200 },
+      "2xlarge": { instance:"db.m8g.12xlarge", cpu:48, memGB:192, maxConns:2000 }
+    }
+  },
+  azure: {
+    artifactory: {
+      small:     { instance:"Standard_D8s_v6",  cpu:8,  memGB:32 },
+      medium:    { instance:"Standard_D8s_v6",  cpu:8,  memGB:32 },
+      large:     { instance:"Standard_D16s_v6", cpu:16, memGB:64 },
+      xlarge:    { instance:"Standard_D16s_v6", cpu:16, memGB:64 },
+      "2xlarge": { instance:"Standard_D16s_v6", cpu:16, memGB:64 }
+    },
+    nginx: {
+      small:     { instance:"Standard_F4s_v2", cpu:4, memGB:8  },
+      medium:    { instance:"Standard_F4s_v2", cpu:4, memGB:8  },
+      large:     { instance:"Standard_F4s_v2", cpu:4, memGB:8  },
+      xlarge:    { instance:"Standard_F8s_v2", cpu:8, memGB:16 },
+      "2xlarge": { instance:"Standard_F8s_v2", cpu:8, memGB:16 }
+    },
+    xray: {
+      small:     { instance:"Standard_F8s_v2", cpu:8, memGB:16 },
+      medium:    { instance:"Standard_D8s_v6", cpu:8, memGB:32 },
+      large:     { instance:"Standard_D8s_v6", cpu:8, memGB:32 },
+      xlarge:    { instance:"Standard_D8s_v6", cpu:8, memGB:32 },
+      "2xlarge": { instance:"Standard_D8s_v6", cpu:8, memGB:32 }
+    },
+    rabbitmq: {
+      small:     { instance:"Standard_F4s_v2", cpu:4, memGB:8 },
+      medium:    { instance:"Standard_F4s_v2", cpu:4, memGB:8 },
+      large:     { instance:"Standard_F4s_v2", cpu:4, memGB:8 },
+      xlarge:    { instance:"Standard_F4s_v2", cpu:4, memGB:8 },
+      "2xlarge": { instance:"Standard_F4s_v2", cpu:4, memGB:8 }
+    },
+    jas: {
+      small:     { instance:"Standard_D8s_v6", cpu:8, memGB:32 },
+      medium:    { instance:"Standard_D8s_v6", cpu:8, memGB:32 },
+      large:     { instance:"Standard_D8s_v6", cpu:8, memGB:32 },
+      xlarge:    { instance:"Standard_D8s_v6", cpu:8, memGB:32 },
+      "2xlarge": { instance:"Standard_D8s_v6", cpu:8, memGB:32 }
+    },
+    artifactoryDb: {
+      small:     { instance:"Standard_E8ds_v6",  cpu:8,  memGB:64,  maxConns:100  },
+      medium:    { instance:"Standard_E16ds_v6", cpu:16, memGB:128, maxConns:200  },
+      large:     { instance:"Standard_E20ds_v6", cpu:20, memGB:160, maxConns:600  },
+      xlarge:    { instance:"Standard_E32ds_v6", cpu:32, memGB:256, maxConns:2000 },
+      "2xlarge": { instance:"Standard_E48ds_v6", cpu:48, memGB:384, maxConns:5000 }
+    },
+    xrayDb: {
+      small:     { instance:"Standard_E4ds_v6",  cpu:4,  memGB:32,  maxConns:200  },
+      medium:    { instance:"Standard_E8ds_v6",  cpu:8,  memGB:64,  maxConns:500  },
+      large:     { instance:"Standard_E16ds_v6", cpu:16, memGB:128, maxConns:600  },
+      xlarge:    { instance:"Standard_E32ds_v6", cpu:32, memGB:256, maxConns:1200 },
+      "2xlarge": { instance:"Standard_E48ds_v6", cpu:48, memGB:384, maxConns:2000 }
+    }
+  },
+  gcp: {
+    artifactory: {
+      small:     { instance:"n4-standard-8",  cpu:8,  memGB:32 },
+      medium:    { instance:"n4-standard-8",  cpu:8,  memGB:32 },
+      large:     { instance:"n4-standard-16", cpu:16, memGB:64 },
+      xlarge:    { instance:"n4-standard-16", cpu:16, memGB:64 },
+      "2xlarge": { instance:"n4-standard-16", cpu:16, memGB:64 }
+    },
+    nginx: {
+      small:     { instance:"c4d-highcpu-4", cpu:4, memGB:8  },
+      medium:    { instance:"c4d-highcpu-4", cpu:4, memGB:8  },
+      large:     { instance:"c4d-highcpu-4", cpu:4, memGB:8  },
+      xlarge:    { instance:"c4d-highcpu-8", cpu:8, memGB:16 },
+      "2xlarge": { instance:"c4d-highcpu-8", cpu:8, memGB:16 }
+    },
+    xray: {
+      small:     { instance:"c4d-highcpu-8", cpu:8, memGB:15 },
+      medium:    { instance:"n4-standard-8", cpu:8, memGB:32 },
+      large:     { instance:"n4-standard-8", cpu:8, memGB:32 },
+      xlarge:    { instance:"n4-standard-8", cpu:8, memGB:32 },
+      "2xlarge": { instance:"n4-standard-8", cpu:8, memGB:32 }
+    },
+    rabbitmq: {
+      small:     { instance:"c4d-highcpu-4", cpu:4, memGB:7 },
+      medium:    { instance:"c4d-highcpu-4", cpu:4, memGB:7 },
+      large:     { instance:"c4d-highcpu-4", cpu:4, memGB:7 },
+      xlarge:    { instance:"c4d-highcpu-4", cpu:4, memGB:7 },
+      "2xlarge": { instance:"c4d-highcpu-4", cpu:4, memGB:7 }
+    },
+    jas: {
+      small:     { instance:"n4-standard-8", cpu:8, memGB:32 },
+      medium:    { instance:"n4-standard-8", cpu:8, memGB:32 },
+      large:     { instance:"n4-standard-8", cpu:8, memGB:32 },
+      xlarge:    { instance:"n4-standard-8", cpu:8, memGB:32 },
+      "2xlarge": { instance:"n4-standard-8", cpu:8, memGB:32 }
+    },
+    artifactoryDb: {
+      small:     { instance:"Cloud SQL 8 vCPU",  cpu:8,  memGB:32,  maxConns:100  },
+      medium:    { instance:"Cloud SQL 16 vCPU", cpu:16, memGB:64,  maxConns:200  },
+      large:     { instance:"Cloud SQL 32 vCPU", cpu:32, memGB:128, maxConns:600  },
+      xlarge:    { instance:"Cloud SQL 48 vCPU", cpu:48, memGB:192, maxConns:2000 },
+      "2xlarge": { instance:"Cloud SQL 64 vCPU", cpu:64, memGB:256, maxConns:5000 }
+    },
+    xrayDb: {
+      small:     { instance:"Cloud SQL 4 vCPU",  cpu:4,  memGB:16,  maxConns:200  },
+      medium:    { instance:"Cloud SQL 8 vCPU",  cpu:8,  memGB:32,  maxConns:500  },
+      large:     { instance:"Cloud SQL 16 vCPU", cpu:16, memGB:64,  maxConns:600  },
+      xlarge:    { instance:"Cloud SQL 32 vCPU", cpu:32, memGB:128, maxConns:1200 },
+      "2xlarge": { instance:"Cloud SQL 48 vCPU", cpu:48, memGB:192, maxConns:2000 }
+    }
+  },
+  // Onprem mirrors the cloud CPU/RAM as generic VMs (JFrog doesn't publish onprem-specific SKUs).
+  onprem: {
+    artifactory: {
+      small:     { instance:"VM 8 vCPU / 32 GB",  cpu:8,  memGB:32 },
+      medium:    { instance:"VM 8 vCPU / 32 GB",  cpu:8,  memGB:32 },
+      large:     { instance:"VM 16 vCPU / 64 GB", cpu:16, memGB:64 },
+      xlarge:    { instance:"VM 16 vCPU / 64 GB", cpu:16, memGB:64 },
+      "2xlarge": { instance:"VM 16 vCPU / 64 GB", cpu:16, memGB:64 }
+    },
+    nginx: {
+      small:     { instance:"VM 4 vCPU / 8 GB",  cpu:4, memGB:8  },
+      medium:    { instance:"VM 4 vCPU / 8 GB",  cpu:4, memGB:8  },
+      large:     { instance:"VM 4 vCPU / 8 GB",  cpu:4, memGB:8  },
+      xlarge:    { instance:"VM 8 vCPU / 16 GB", cpu:8, memGB:16 },
+      "2xlarge": { instance:"VM 8 vCPU / 16 GB", cpu:8, memGB:16 }
+    },
+    xray: {
+      small:     { instance:"VM 8 vCPU / 16 GB", cpu:8, memGB:16 },
+      medium:    { instance:"VM 8 vCPU / 32 GB", cpu:8, memGB:32 },
+      large:     { instance:"VM 8 vCPU / 32 GB", cpu:8, memGB:32 },
+      xlarge:    { instance:"VM 8 vCPU / 32 GB", cpu:8, memGB:32 },
+      "2xlarge": { instance:"VM 8 vCPU / 32 GB", cpu:8, memGB:32 }
+    },
+    rabbitmq: {
+      small:     { instance:"VM 4 vCPU / 8 GB", cpu:4, memGB:8 },
+      medium:    { instance:"VM 4 vCPU / 8 GB", cpu:4, memGB:8 },
+      large:     { instance:"VM 4 vCPU / 8 GB", cpu:4, memGB:8 },
+      xlarge:    { instance:"VM 4 vCPU / 8 GB", cpu:4, memGB:8 },
+      "2xlarge": { instance:"VM 4 vCPU / 8 GB", cpu:4, memGB:8 }
+    },
+    jas: {
+      small:     { instance:"VM 8 vCPU / 32 GB", cpu:8, memGB:32 },
+      medium:    { instance:"VM 8 vCPU / 32 GB", cpu:8, memGB:32 },
+      large:     { instance:"VM 8 vCPU / 32 GB", cpu:8, memGB:32 },
+      xlarge:    { instance:"VM 8 vCPU / 32 GB", cpu:8, memGB:32 },
+      "2xlarge": { instance:"VM 8 vCPU / 32 GB", cpu:8, memGB:32 }
+    },
+    artifactoryDb: {
+      small:     { instance:"PostgreSQL VM 8 vCPU / 32 GB",  cpu:8,  memGB:32,  maxConns:100  },
+      medium:    { instance:"PostgreSQL VM 16 vCPU / 64 GB", cpu:16, memGB:64,  maxConns:200  },
+      large:     { instance:"PostgreSQL VM 32 vCPU / 128 GB",cpu:32, memGB:128, maxConns:600  },
+      xlarge:    { instance:"PostgreSQL VM 48 vCPU / 192 GB",cpu:48, memGB:192, maxConns:2000 },
+      "2xlarge": { instance:"PostgreSQL VM 64 vCPU / 256 GB",cpu:64, memGB:256, maxConns:5000 }
+    },
+    xrayDb: {
+      small:     { instance:"PostgreSQL VM 4 vCPU / 16 GB",  cpu:4,  memGB:16,  maxConns:200  },
+      medium:    { instance:"PostgreSQL VM 8 vCPU / 32 GB",  cpu:8,  memGB:32,  maxConns:500  },
+      large:     { instance:"PostgreSQL VM 16 vCPU / 64 GB", cpu:16, memGB:64,  maxConns:600  },
+      xlarge:    { instance:"PostgreSQL VM 32 vCPU / 128 GB",cpu:32, memGB:128, maxConns:1200 },
+      "2xlarge": { instance:"PostgreSQL VM 48 vCPU / 192 GB",cpu:48, memGB:192, maxConns:2000 }
+    }
+  }
+};
+
+// Per-tier storage (size, IOPS, MB/s) — from the JFrog storage specification page.
+const STORAGE = {
+  artifactory:   { small:{gb:500, iops:3000, mbps:500 },  medium:{gb:500, iops:3000, mbps:500 },  large:{gb:1000,iops:6000, mbps:1000}, xlarge:{gb:1000,iops:6000, mbps:1000}, "2xlarge":{gb:1000,iops:6000, mbps:1000} },
+  xray:          { small:{gb:100, iops:3000, mbps:500 },  medium:{gb:100, iops:3000, mbps:500 },  large:{gb:200, iops:6000, mbps:1000}, xlarge:{gb:200, iops:6000, mbps:1000}, "2xlarge":{gb:200, iops:6000, mbps:1000} },
+  rabbitmq:      { small:{gb:100, iops:3000, mbps:500 },  medium:{gb:100, iops:3000, mbps:500 },  large:{gb:100, iops:3000, mbps:500 }, xlarge:{gb:100, iops:3000, mbps:500 }, "2xlarge":{gb:100, iops:3000, mbps:500 } },
+  jas:           { small:{gb:300, iops:3000, mbps:500 },  medium:{gb:300, iops:3000, mbps:500 },  large:{gb:300, iops:3000, mbps:500 }, xlarge:{gb:300, iops:3000, mbps:500 }, "2xlarge":{gb:300, iops:3000, mbps:500 } },
+  // Artifactory DB disk is "1/3 of filestore" with these IOPS/throughput per tier.
+  artifactoryDb: { small:{frac:1/3, iops:4000, mbps:500 },  medium:{frac:1/3, iops:6000, mbps:600 },  large:{frac:1/3, iops:10000, mbps:800}, xlarge:{frac:1/3, iops:12000, mbps:1000}, "2xlarge":{frac:1/3, iops:20000, mbps:1500} },
+  xrayDb:        { small:{gb:500, iops:4000, mbps:500 },  medium:{gb:500, iops:6000, mbps:600 },  large:{gb:800, iops:6000, mbps:600}, xlarge:{gb:1000,iops:8000, mbps:1000}, "2xlarge":{gb:2500,iops:12000,mbps:1000} }
+};
+
+// Co-location rules — verbatim quotes from JFrog reference architecture pages.
+const COLOCATION_RULES = [
+  { rule:"Distribution can run on the Artifactory nodes",        relation:"co-locate", components:["Distribution → Artifactory"] },
+  { rule:"Each Artifactory replica should run in its own instance (prefer a dedicated node pool)", relation:"dedicated", components:["Artifactory"] },
+  { rule:"Each Nginx replica should run in its own instance (prefer a dedicated node pool)",       relation:"dedicated", components:["Nginx"] },
+  { rule:"Each Xray replica should run in its own instance (prefer a dedicated node pool)",        relation:"dedicated", components:["Xray"] },
+  { rule:"If running JAS, it's recommended to use a dedicated node pool for it to protect Xray and Artifactory pods", relation:"dedicated", components:["JAS"] },
+  { rule:"For Xray HA / more than 100K indexed artifacts, RabbitMQ and Xray must run on separate servers (split mode)", relation:"dedicated", components:["RabbitMQ", "Xray"] },
+  { rule:"RabbitMQ must be deployed in odd-numbered clusters (1, 3, 5, ...) so quorum queues can elect a majority", relation:"odd-quorum", components:["RabbitMQ"] }
+];
+
+const STORAGE_CLASS = {
+  aws:    { block:"EBS gp3 (SSD, ≥3000 IOPS)",       premium:"EBS io2 Block Express",  object:"Amazon S3 + lifecycle policies" },
+  azure:  { block:"Premium SSD v2",                  premium:"Ultra Disk",             object:"Azure Blob Storage (Hot/Cool tiers)" },
+  gcp:    { block:"pd-ssd (≥3000 IOPS)",             premium:"Hyperdisk Extreme",      object:"Google Cloud Storage + Object Lifecycle" },
+  onprem: { block:"Enterprise NVMe SSD (≥3K IOPS)",  premium:"All-flash SAN",          object:"S3-compatible (MinIO / Ceph / NetApp StorageGRID)" }
+};
+
+const NETWORK_REC = {
+  aws:    "≥ 10 Gbps ENA, Placement Group (cluster) for HA replicas, PrivateLink for managed services.",
+  azure:  "Accelerated Networking, ≥ 10 Gbps, Availability Zones for HA.",
+  gcp:    "Tier-1 networking (up to 32 Gbps), regional MIG, Cloud NAT for egress.",
+  onprem: "≥ 10 GbE bonded NICs, low-latency switching, redundant L3 paths between nodes."
+};
+
+const K8S_NOTES = {
+  aws:    "EKS — Karpenter or Cluster Autoscaler; storageClass <code>gp3</code> via ebs.csi.aws.com; NLB for ingress.",
+  azure:  "AKS — Premium SSD CSI (disk.csi.azure.com); Standard SKU LB; Application Gateway Ingress.",
+  gcp:    "GKE (Standard or Autopilot) — pd-ssd CSI; GCLB Ingress; Workload Identity for IAM.",
+  onprem: "Vanilla K8s / OpenShift / Rancher — CSI driver, MetalLB / F5 / NSX-ALB load balancer, dedicated worker pools."
+};
+
+/* ---------- Calculator ---------- */
+
+function toggleConditionalFields() {
+  const deployment = document.querySelector('input[name="deployment"]:checked').value;
+  const topology   = document.querySelector('input[name="topology"]:checked').value;
+  document.getElementById("k8sPlacementField").style.display = deployment === "k8s" ? "" : "none";
+  document.getElementById("passiveScaleField").style.display = topology === "active-passive" ? "" : "none";
+}
+
+function calculate() {
+  toggleConditionalFields();
+  const cloud         = document.querySelector('input[name="cloud"]:checked').value;
+  const deployment    = document.querySelector('input[name="deployment"]:checked').value;
+  const ha            = document.querySelector('input[name="ha"]:checked').value === "yes";
+  const dbMode        = document.querySelector('input[name="db"]:checked').value;
+  const k8sPlacement  = document.querySelector('input[name="k8sPlacement"]:checked')?.value || "dedicated";
+  const topology      = document.querySelector('input[name="topology"]:checked').value;
+  const passiveScale  = document.querySelector('input[name="passiveScale"]:checked')?.value || "hot";
+
+  const activeClients = parseInt(document.getElementById("activeClients").value, 10) || 0;
+  const rpm           = parseInt(document.getElementById("rpm").value, 10) || 0;
+  const binaryTB      = parseFloat(document.getElementById("binaryStorageTB").value) || 0;
+  const xrayArtifacts = parseInt(document.getElementById("xrayArtifacts").value, 10) || 0;
+
+  const svc = {
+    distribution:   document.getElementById("svcDistribution").checked,
+    jas:            document.getElementById("svcJAS").checked,
+    workers:        document.getElementById("svcWorkers").checked,
+    appTrust:       document.getElementById("svcAppTrust").checked,
+    missionControl: document.getElementById("svcMissionControl").checked
+  };
+
+  // Effective tier = max of client-implied and RPM-implied tier.
+  const clientTier = tierFromClients(activeClients);
+  const rpmTierKey = tierFromRpm(rpm);
+  const tier       = maxTier(clientTier, rpmTierKey);
+  const tierMeta   = TIER_RPM[tier];
+  const arch       = REF_ARCH[cloud];
+  const cloudLabel = { aws:"AWS", azure:"Azure", gcp:"GCP", onprem:"Private Datacenter" }[cloud];
+
+  const xrayEnabled = xrayArtifacts > 0;
+
+  // Helper: build a row from REF_ARCH + REPLICAS + STORAGE for a given component.
+  function buildRow(key, displayName, opts = {}) {
+    const archEntry = arch[key][tier];
+    let replicas    = ha ? REPLICAS[key][tier] : 1;
+    if (opts.forceReplicas != null) replicas = opts.forceReplicas;
+    const storage   = opts.storage || STORAGE[key][tier];
+    return {
+      name: displayName,
+      replicas,
+      instance: archEntry.instance,
+      cpu: archEntry.cpu,
+      memGB: archEntry.memGB,
+      diskGB: storage.gb,
+      iops: storage.iops,
+      mbps: storage.mbps,
+      note: opts.note || ""
+    };
+  }
+
+  const components = [];
+
+  /* --- Artifactory --- */
+  // Distribution co-locates on Artifactory nodes: add 200 GB to its disk, note it, no new VMs.
+  let artiDisk = STORAGE.artifactory[tier].gb;
+  let artiNote = "Each replica on its own VM (JFrog dedicated-instance rule).";
+  if (svc.distribution) {
+    artiDisk += 200;
+    artiNote += " Distribution co-located (+200 GB).";
+  }
+  components.push(buildRow("artifactory", "Artifactory", {
+    storage: { gb: artiDisk, iops: STORAGE.artifactory[tier].iops, mbps: STORAGE.artifactory[tier].mbps },
+    note: artiNote
+  }));
+
+  /* --- Nginx --- */
+  components.push(buildRow("nginx", "Nginx (LB / TLS)", {
+    storage: { gb: 50, iops: 3000, mbps: 200 },
+    note: "Dedicated VM per replica (JFrog rule)."
+  }));
+
+  /* --- Artifactory PostgreSQL --- */
+  {
+    const db = arch.artifactoryDb[tier];
+    const stor = STORAGE.artifactoryDb[tier];
+    const dbDiskGB = Math.max(100, Math.round(binaryTB * 1024 * stor.frac));
+    components.push({
+      name: "PostgreSQL (Artifactory DB)",
+      replicas: dbMode === "self" && ha ? 2 : 1,
+      instance: dbMode === "managed" ? db.instance : `Self-hosted ${db.cpu} vCPU / ${db.memGB} GB`,
+      cpu: db.cpu,
+      memGB: db.memGB,
+      diskGB: dbDiskGB,
+      iops: stor.iops,
+      mbps: stor.mbps,
+      note: dbMode === "managed"
+        ? `Managed (max ${db.maxConns} conns). Disk = 1/3 of binary filestore.`
+        : `Self-hosted (max ${db.maxConns} conns). Disk = 1/3 of binary filestore. Primary+standby for HA.`
+    });
+  }
+
+  /* --- Xray + RabbitMQ + Xray DB --- */
+  if (xrayEnabled) {
+    components.push(buildRow("xray", "Xray", {
+      note: "Dedicated VM per replica. Index time scales with artifact count."
+    }));
+    // RabbitMQ must be deployed in odd-numbered clusters (quorum queues need majority consensus).
+    // Single node (1) is acceptable for non-HA small deployments; any cluster ≥ 2 must be rounded up to the next odd number.
+    const oddify = n => (n <= 1 ? n : (n % 2 === 0 ? n + 1 : n));
+    const rmqBase     = ha ? REPLICAS.rabbitmq[tier] : (xrayArtifacts > 100000 ? 3 : 1);
+    const rmqReplicas = oddify(rmqBase);
+    const quorumNote  = rmqReplicas >= 3
+      ? `Odd replica count (${rmqReplicas}) enforced for quorum — tolerates ${(rmqReplicas - 1) / 2} node failure${(rmqReplicas - 1) / 2 === 1 ? "" : "s"}.`
+      : "Single-node mode — no quorum / no failure tolerance.";
+    const splitNote   = xrayArtifacts > 100000 || ha
+      ? "Split mode — RabbitMQ on separate VMs from Xray (JFrog HA rule)."
+      : "Co-located permitted at ≤100K artifacts (still split here for safety).";
+    components.push(buildRow("rabbitmq", "RabbitMQ (Xray)", {
+      forceReplicas: rmqReplicas,
+      note: `${splitNote} ${quorumNote}`
+    }));
+    const xdb = arch.xrayDb[tier];
+    const xdbStor = STORAGE.xrayDb[tier];
+    components.push({
+      name: "PostgreSQL (Xray DB)",
+      replicas: dbMode === "self" && ha ? 2 : 1,
+      instance: dbMode === "managed" ? xdb.instance : `Self-hosted ${xdb.cpu} vCPU / ${xdb.memGB} GB`,
+      cpu: xdb.cpu,
+      memGB: xdb.memGB,
+      diskGB: xdbStor.gb,
+      iops: xdbStor.iops,
+      mbps: xdbStor.mbps,
+      note: dbMode === "managed"
+        ? `Managed (max ${xdb.maxConns} conns).`
+        : `Self-hosted (max ${xdb.maxConns} conns). Primary+standby for HA.`
+    });
+  }
+
+  /* --- JAS (Advanced Security) --- */
+  if (svc.jas && xrayEnabled) {
+    components.push(buildRow("jas", "JAS (Xray Advanced Security)", {
+      note: "Dedicated node pool required (JFrog rule — protects Xray + Artifactory)."
+    }));
+  } else if (svc.jas && !xrayEnabled) {
+    // JAS is part of Xray — silently ignore if Xray disabled (warning shown elsewhere).
+  }
+
+  /* --- Optional services from hardware sizing matrix --- */
+  if (svc.workers) {
+    components.push({
+      name: "Workers",
+      replicas: ha ? 2 : 1,
+      instance: arch.nginx[tier].instance, // small footprint - use nginx-class VM as a proxy
+      cpu: 4, memGB: 4, diskGB: 50, iops: 3000, mbps: 200,
+      note: "Hardware sizing matrix: 4 CPU / 4 GB / 50 GB. Requires Artifactory ≥ 7.98.4."
+    });
+  }
+  if (svc.appTrust) {
+    components.push({
+      name: "AppTrust",
+      replicas: ha ? 2 : 1,
+      instance: arch.nginx[tier].instance,
+      cpu: 2, memGB: 1, diskGB: 50, iops: 3000, mbps: 200,
+      note: "Hardware sizing matrix: 2 CPU / 1 GB / 50 GB."
+    });
+    components.push({
+      name: "UnifiedPolicy",
+      replicas: ha ? 2 : 1,
+      instance: arch.nginx[tier].instance,
+      cpu: 2, memGB: 1, diskGB: 50, iops: 3000, mbps: 200,
+      note: "Required alongside AppTrust. 2 CPU / 1 GB / 50 GB."
+    });
+  }
+  if (svc.missionControl) {
+    components.push({
+      name: "Mission Control",
+      replicas: 1,
+      instance: arch.nginx[tier].instance,
+      cpu: 4, memGB: 8, diskGB: 100, iops: 3000, mbps: 200,
+      note: "Single management plane (not HA)."
+    });
+  }
+
+  /* --- Compute totals for the active cluster --- */
+  function totalsOf(comps) {
+    let cpu = 0, mem = 0, disk = 0, nodes = 0;
+    comps.forEach(c => {
+      c.totalCPU  = c.cpu * c.replicas;
+      c.totalMem  = c.memGB * c.replicas;
+      c.totalDisk = c.diskGB * c.replicas;
+      cpu += c.totalCPU; mem += c.totalMem; disk += c.totalDisk; nodes += c.replicas;
+    });
+    return { cpu, mem, disk, nodes };
+  }
+  const activeTotals = totalsOf(components);
+
+  /* --- Build the passive cluster if active/passive topology is selected --- */
+  let passiveComponents = null;
+  let passiveTotals     = null;
+  if (topology === "active-passive") {
+    // Deep-copy components and rescale replicas based on the passive scale mode.
+    // Hot = identical; Warm = 1 replica per component (RabbitMQ rounded up to 3 for quorum), same DB sizing.
+    passiveComponents = components.map(c => {
+      const copy = { ...c };
+      if (passiveScale === "warm") {
+        if (c.name === "RabbitMQ (Xray)") {
+          copy.replicas = c.replicas >= 3 ? 3 : 1; // keep quorum-capable
+        } else if (c.name.startsWith("PostgreSQL")) {
+          copy.replicas = c.replicas; // keep DB at full sizing for fast failover (still 1 in managed, 2 if self-HA)
+        } else {
+          copy.replicas = 1;
+        }
+        copy.note = `Warm standby — ${copy.note}`;
+      } else {
+        copy.note = `Hot standby (mirror) — ${copy.note}`;
+      }
+      return copy;
+    });
+    passiveTotals = totalsOf(passiveComponents);
+  }
+
+  const binaryStorageTarget = STORAGE_CLASS[cloud].object;
+
+  render({
+    cloud, cloudLabel, deployment, ha, dbMode, k8sPlacement, topology, passiveScale,
+    tier, tierMeta, clientTier, rpmTierKey,
+    activeClients, rpm, binaryTB,
+    xrayArtifacts, xrayEnabled, svc,
+    components, activeTotals,
+    passiveComponents, passiveTotals,
+    binaryStorageTarget
+  });
+}
+
+/* ---------- Render ---------- */
+
+function fmtGB(n) {
+  if (n >= 1024) return (n / 1024).toFixed(1) + " TB";
+  return n + " GB";
+}
+
+function render(r) {
+  const deployLabel = r.deployment === "k8s" ? "Kubernetes" : "Virtual Machines";
+  const tierName    = TIER_LABEL[r.tier];
+  const isAP        = r.topology === "active-passive";
+  const placement   = r.deployment === "k8s"
+    ? (r.k8sPlacement === "antiaffinity" ? "K8s anti-affinity (shared pool)" : "K8s dedicated node pool")
+    : "VM (one Artifactory per VM)";
+  let html = "";
+
+  /* Summary */
+  html += `
+    <div class="panel">
+      <h2>Deployment summary</h2>
+      <div class="summary-grid">
+        <div class="stat"><div class="label">Environment</div><div class="value">${r.cloudLabel}</div></div>
+        <div class="stat"><div class="label">Model</div><div class="value">${deployLabel}</div></div>
+        <div class="stat"><div class="label">Tier</div><div class="value">${tierName}</div></div>
+        <div class="stat"><div class="label">Topology</div><div class="value">${isAP ? "Active+Passive" : "Single"}</div></div>
+      </div>
+      <div style="margin-top:14px;">
+        <span class="chip">${r.activeClients} active clients → ${TIER_LABEL[r.clientTier]}</span>
+        <span class="chip">${r.rpm.toLocaleString()} RPM → ${TIER_LABEL[r.rpmTierKey]} (≤ ${r.tierMeta.maxConns} conns)</span>
+        <span class="chip warn">Effective tier: ${tierName} (max of both)</span>
+        ${r.xrayEnabled ? `<span class="chip">Xray ${r.xrayArtifacts.toLocaleString()} indexed</span>` : `<span class="chip">No Xray</span>`}
+      </div>
+      <div style="margin-top:10px;">
+        <span class="chip ok">${r.ha ? "HA enabled" : "Single replica"}</span>
+        <span class="chip ok">Placement: ${placement}</span>
+        ${isAP ? `<span class="chip warn">Passive: ${r.passiveScale === "hot" ? "Hot mirror" : "Warm minimal"}</span>` : ""}
+      </div>
+    </div>
+  `;
+
+  /* Warnings */
+  const warnings = [];
+  if (r.activeClients > 200)             warnings.push({type:"danger", text:"Active clients exceed 200 — contact JFrog Support for custom Enterprise+ sizing."});
+  if (r.rpm > 500000)                    warnings.push({type:"danger", text:"RPM exceeds published 2XLarge tier (500K). Custom sizing required."});
+  if (r.xrayArtifacts > 10000000)        warnings.push({type:"danger", text:"Indexed artifacts exceed 10M — contact JFrog Support."});
+  if (r.svc.jas && !r.xrayEnabled)       warnings.push({type:"warn",   text:"JAS requires Xray. Enable Xray or uncheck JAS — it has been skipped."});
+  if (r.deployment === "k8s")            warnings.push({type:"info",   text:"<strong>Kubernetes:</strong> the per-replica vCPU/RAM below represent the worker-node capacity each pod needs. JFrog's Helm chart sizing presets (in <code>jfrog/charts</code>) define authoritative per-pod requests/limits — typically smaller because requests are floors, not host totals."});
+
+  if (warnings.length) {
+    html += `<div class="panel"><h2>Notes &amp; warnings</h2>`;
+    warnings.forEach(w => {
+      const cls = w.type === "danger" ? "danger" : w.type === "info" ? "info" : "";
+      html += `<div class="notice ${cls}" style="margin-bottom:8px;">${w.text}</div>`;
+    });
+    html += `</div>`;
+  }
+
+  /* Aggregate footprint */
+  function footprintCard(label, t) {
+    return `
+      <div class="panel">
+        <h2>${label}</h2>
+        <div class="summary-grid">
+          <div class="stat"><div class="label">VM instances</div><div class="value">${t.nodes}</div></div>
+          <div class="stat"><div class="label">vCPU</div><div class="value">${t.cpu}</div></div>
+          <div class="stat"><div class="label">Memory</div><div class="value">${t.mem}<span class="unit">GB</span></div></div>
+          <div class="stat"><div class="label">Service disk</div><div class="value">${fmtGB(t.disk)}</div></div>
+        </div>
+      </div>
+    `;
+  }
+  if (isAP) {
+    const gt = {
+      nodes: r.activeTotals.nodes + r.passiveTotals.nodes,
+      cpu:   r.activeTotals.cpu   + r.passiveTotals.cpu,
+      mem:   r.activeTotals.mem   + r.passiveTotals.mem,
+      disk:  r.activeTotals.disk  + r.passiveTotals.disk
+    };
+    html += footprintCard("Grand total (Active + Passive)", gt);
+    html += `<div class="totals">
+      ${footprintCard("Active site", r.activeTotals)}
+      ${footprintCard("Passive site (" + (r.passiveScale === "hot" ? "Hot mirror" : "Warm minimal") + ")", r.passiveTotals)}
+    </div>`;
+  } else {
+    html += footprintCard("Aggregate footprint", r.activeTotals);
+  }
+  // Storage + network row (shared across topology)
+  html += `
+    <div class="panel">
+      <div class="totals">
+        <div class="total-card">
+          <div class="label">Binary / artifact storage</div>
+          <div class="value">${isAP ? (r.binaryTB * 2) : r.binaryTB} TB</div>
+          <div class="hint" style="margin-top:6px;">${r.binaryStorageTarget}${isAP ? ` — ${r.binaryTB} TB per site (federation replicates active → passive)` : ""}</div>
+        </div>
+        <div class="total-card">
+          <div class="label">Network</div>
+          <div class="value">${NETWORK_REC[r.cloud].split(",")[0]}</div>
+          <div class="hint" style="margin-top:6px;">${NETWORK_REC[r.cloud]}${isAP ? " Cross-site replication: ensure adequate WAN bandwidth + low latency for federation." : ""}</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  /* Per-component table + procurement tally — rendered per cluster */
+  const instColHeader = r.deployment === "k8s" ? "Recommended node-pool VM" : "VM instance";
+  function clusterSection(label, comps) {
+    let h = `
+      <div class="panel">
+        <h2>${label} — per-component sizing (${r.cloudLabel} ${tierName}, ${deployLabel})</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Component</th><th>Replicas</th><th>vCPU</th><th>RAM</th>
+              <th>Disk / IOPS</th><th>${instColHeader}</th><th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+    comps.forEach(c => {
+      h += `
+        <tr>
+          <td><strong>${c.name}</strong></td>
+          <td>${c.replicas}</td>
+          <td>${c.cpu}</td>
+          <td>${c.memGB} GB</td>
+          <td>${fmtGB(c.diskGB)} <span class="hint">/ ${c.iops.toLocaleString()} IOPS</span></td>
+          <td><code>${c.instance}</code><br><span class="hint">${c.cpu} vCPU / ${c.memGB} GB</span></td>
+          <td><span class="hint">${c.note}</span></td>
+        </tr>
+      `;
+    });
+    h += `</tbody></table></div>`;
+
+    // Procurement tally for this cluster
+    const tally = {};
+    comps.forEach(c => {
+      const key = c.instance;
+      if (!tally[key]) tally[key] = { cpu: c.cpu, memGB: c.memGB, count: 0, usedBy: [] };
+      tally[key].count += c.replicas;
+      tally[key].usedBy.push(`${c.name} ×${c.replicas}`);
+    });
+    const rows = Object.entries(tally).sort((a,b) => b[1].count - a[1].count);
+    const total = rows.reduce((s,[,v]) => s + v.count, 0);
+    const procTitle = r.deployment === "k8s"
+      ? `${label} — ${r.cloudLabel} VMs for worker pool`
+      : `${label} — ${r.cloudLabel} VM procurement list`;
+    h += `<div class="panel"><h2>${procTitle}</h2>
+      <table>
+        <thead><tr><th>VM type</th><th>vCPU</th><th>RAM</th><th>Count</th><th>Used by</th></tr></thead>
+        <tbody>`;
+    rows.forEach(([name, info]) => {
+      h += `<tr>
+        <td><code>${name}</code></td>
+        <td>${info.cpu}</td>
+        <td>${info.memGB} GB</td>
+        <td><strong>${info.count}</strong></td>
+        <td><span class="hint">${info.usedBy.join(", ")}</span></td>
+      </tr>`;
+    });
+    h += `<tr style="background:var(--panel-2);">
+        <td colspan="3"><strong>Total VM instances</strong></td>
+        <td><strong>${total}</strong></td>
+        <td></td>
+      </tr></tbody></table></div>`;
+    return h;
+  }
+
+  html += clusterSection(isAP ? "Active site" : "Cluster", r.components);
+  if (isAP) html += clusterSection("Passive site", r.passiveComponents);
+
+  /* Co-location rules */
+  html += `
+    <div class="panel">
+      <h2>Co-location rules (from JFrog reference architecture)</h2>
+      <table>
+        <thead><tr><th>Rule</th><th>Relation</th><th>Applies to</th></tr></thead>
+        <tbody>
+  `;
+  COLOCATION_RULES.forEach(rule => {
+    const cls = rule.relation === "co-locate" ? "ok" : rule.relation === "odd-quorum" ? "danger" : "warn";
+    html += `
+      <tr>
+        <td><blockquote>"${rule.rule}"</blockquote></td>
+        <td><span class="chip ${cls}">${rule.relation}</span></td>
+        <td>${rule.components.map(c => `<span class="chip">${c}</span>`).join("")}</td>
+      </tr>
+    `;
+  });
+  html += `</tbody></table>`;
+  // Show explicitly which rule was applied in this calculation
+  const applied = [];
+  if (r.svc.distribution) applied.push("Distribution co-located onto Artifactory nodes (+200 GB disk, no new VMs).");
+  if (r.xrayEnabled && (r.xrayArtifacts > 100000 || r.ha)) applied.push("RabbitMQ deployed in split mode on dedicated VMs (Xray HA / >100K artifacts).");
+  if (r.xrayEnabled) {
+    const rmqRow = r.components.find(c => c.name === "RabbitMQ (Xray)");
+    if (rmqRow && rmqRow.replicas >= 3) {
+      applied.push(`RabbitMQ replica count rounded to odd (${rmqRow.replicas}) for quorum — tolerates ${(rmqRow.replicas - 1) / 2} simultaneous node failure(s).`);
+    } else if (rmqRow && rmqRow.replicas === 1) {
+      applied.push("RabbitMQ running single-node (no quorum) — acceptable only for non-HA Small deployments.");
+    }
+  }
+  if (r.svc.jas && r.xrayEnabled) applied.push("JAS deployed on its own dedicated VM (Xray protection rule).");
+  if (r.deployment === "k8s" && r.k8sPlacement === "antiaffinity") {
+    applied.push("Kubernetes <strong>podAntiAffinity</strong> on shared node pool — Artifactory replicas spread across distinct nodes, but the pool may also host other JFrog services. Node count unchanged (still 1 node per Artifactory replica due to anti-affinity).");
+  } else if (r.deployment === "k8s") {
+    applied.push("Kubernetes <strong>dedicated node pool</strong> for Artifactory — one pod per node, no other workloads share the pool (JFrog recommendation).");
+  } else {
+    applied.push("Each Artifactory replica on its own dedicated VM (VM model).");
+  }
+  applied.push("Artifactory, Nginx, Xray: dedicated VM/node per replica (no co-mingling between these services).");
+  if (r.topology === "active-passive") {
+    const scaleDesc = r.passiveScale === "hot" ? "identical replica counts for instant failover" : "1 replica per component (RabbitMQ kept at 3 for quorum), DB at full sizing for fast scale-up";
+    applied.push(`<strong>Active+Passive DR topology</strong> — passive site sized as <em>${r.passiveScale === "hot" ? "Hot mirror" : "Warm minimal"}</em>: ${scaleDesc}. Use Artifactory federation / replication for data sync between sites.`);
+  }
+  html += `<div style="margin-top:14px;"><div class="hint" style="margin-bottom:6px;">Applied in this configuration:</div>`;
+  applied.forEach(a => { html += `<div class="notice ok" style="margin-bottom:6px;">${a}</div>`; });
+  html += `</div></div>`;
+
+  /* Storage & network */
+  const sc = STORAGE_CLASS[r.cloud];
+  html += `
+    <div class="panel">
+      <h2>Storage &amp; network — ${r.cloudLabel}</h2>
+      <table>
+        <tbody>
+          <tr><td><strong>Service disks (block)</strong></td><td>${sc.block} — sized per-tier (Artifactory 500/1000 GB, Xray 100/200 GB, RabbitMQ 100 GB, JAS 300 GB)</td></tr>
+          <tr><td><strong>Database disks</strong></td><td>${sc.premium} — Artifactory DB ≈ 1/3 of filestore; Xray DB 500–2500 GB per tier; IOPS 4K–20K</td></tr>
+          <tr><td><strong>Binary / artifact backend</strong></td><td>${sc.object} — sized at <strong>${r.binaryTB} TB</strong></td></tr>
+          <tr><td><strong>Network</strong></td><td>${NETWORK_REC[r.cloud]}</td></tr>
+          ${r.deployment === "k8s" ? `<tr><td><strong>Kubernetes</strong></td><td>${K8S_NOTES[r.cloud]}</td></tr>` : ""}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  /* Reference */
+  html += `
+    <details>
+      <summary>How these numbers are derived</summary>
+      <p><strong>Effective tier</strong> = max of two inputs: active-clients tier (hardware sizing matrix: ≤20 Small, ≤100 Medium, ≤200 Large, &gt;200 contact support) and RPM tier (reference architecture: ≤6K Small, ≤50K Medium, ≤100K Large, ≤200K XLarge, ≤500K 2XLarge).</p>
+      <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <code>/reference-architecture/self-managed/deployment/sizing/{aws,azure,gcp}/</code> pages. Replicas by tier — Artifactory 1/2/3/4/6, Nginx and Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3, JAS 1/1/1/1/1.</p>
+      <p><strong>Storage sizing</strong> (disk, IOPS, throughput) is from the JFrog storage specification page: Artifactory 500→1000 GB, Xray 100→200 GB, RabbitMQ 100 GB, JAS 300 GB; Artifactory DB = 1/3 of filestore at 4K–20K IOPS; Xray DB 500–2500 GB at 4K–12K IOPS.</p>
+      <p><strong>Co-location</strong>: Distribution is co-located onto Artifactory nodes (no extra VMs, +200 GB to Artifactory disk). Artifactory, Nginx, Xray, JAS each require a dedicated VM per replica. RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts.</p>
+      <p><strong>Optional services</strong> (Workers, AppTrust + UnifiedPolicy, Mission Control) come from the JFrog hardware sizing matrix (not the per-cloud reference architecture) — Workers 4/4/50, AppTrust &amp; UnifiedPolicy each 2/1/50, Mission Control 4/8/100.</p>
+      <p><strong>Onprem</strong>: JFrog does not publish a dedicated onprem sizing table, so this calculator mirrors the cloud CPU/RAM as generic VM sizes.</p>
+      <p><strong>VM vs Kubernetes</strong>: capacity numbers are identical — they describe the worker-node footprint either way. On Kubernetes, per-pod <code>requests</code>/<code>limits</code> come from the JFrog Helm chart sizing presets and are typically smaller than the full VM allocation.</p>
+    </details>
+  `;
+
+  document.getElementById("output").innerHTML = html;
+}
+
+/* ---------- Wire up ---------- */
+
+document.getElementById("calcBtn").addEventListener("click", calculate);
+document.getElementById("inputs").addEventListener("change", calculate);
+document.getElementById("inputs").addEventListener("input", (e) => {
+  if (e.target.type === "number") calculate();
+});
+
+function paintRadioStates() {
+  document.querySelectorAll(".radio-group").forEach(group => {
+    group.querySelectorAll("label").forEach(lbl => {
+      const input = lbl.querySelector('input[type="radio"]');
+      lbl.classList.toggle("checked", input.checked);
+    });
+  });
+}
+document.addEventListener("change", paintRadioStates);
+paintRadioStates();
+toggleConditionalFields();
+calculate();
+</script>
+
+</body>
+</html>
