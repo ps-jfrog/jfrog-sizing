@@ -163,8 +163,9 @@
         <label><input type="checkbox" id="svcAppTrust" /> AppTrust + UnifiedPolicy</label>
         <label><input type="checkbox" id="svcMissionControl" /> Mission Control</label>
         <label><input type="checkbox" id="svcCuration" /> Curation + Catalog</label>
+        <label><input type="checkbox" id="svcRuntime" /> Runtime Security</label>
       </div>
-      <div class="hint">Distribution co-locates on Artifactory (+200 GB, no new VMs). JAS, Workers, AppTrust + UnifiedPolicy and Mission Control add their own nodes per the hardware sizing matrix. JAS requires Xray. Curation adds the Catalog service (+ its own DB and a Valkey cache).</div>
+      <div class="hint">Distribution co-locates on Artifactory (+200 GB, no new VMs). Mission Control is bundled into Artifactory (no separate node or DB). JAS, Workers and AppTrust + UnifiedPolicy add their own nodes per the hardware sizing matrix. JAS requires Xray. Curation adds the Catalog service (+ its own DB and a Valkey cache). Runtime Security adds a Runtime server (+ its own DB) and a per-node sensor DaemonSet — both as separate Helm releases.</div>
     </div>
 
     <div class="field" id="valkeyField" style="display:none;">
@@ -183,6 +184,15 @@
         <label><input type="radio" name="db" value="external" /> External</label>
       </div>
       <div class="hint">Co-located = a PostgreSQL provisioned with the deployment (the Helm chart's bundled DB on K8s, or DB nodes alongside the platform on VMs) — it counts toward the footprint. External = any managed/standalone RDBMS you run separately (RDS / Cloud SQL / Flexible Server / self-managed), sized here but outside the footprint.</div>
+    </div>
+
+    <div class="field">
+      <label>Database instances</label>
+      <div class="radio-group" data-name="dbInstances">
+        <label><input type="radio" name="dbInstances" value="shared" checked /> Shared (one instance)</label>
+        <label><input type="radio" name="dbInstances" value="dedicated" /> Dedicated per product</label>
+      </div>
+      <div class="hint">Shared = one PostgreSQL instance hosting a logical database per product (the typical setup; the Helm chart's bundled DB works this way). Dedicated = a separate instance per product (more DB nodes). Each product always gets its own logical database either way.</div>
     </div>
 
     <button class="calc" id="calcBtn">Calculate sizing</button>

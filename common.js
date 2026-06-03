@@ -387,6 +387,7 @@ function buildSizingCsv(r) {
   row("NGINX tier provisioned", r.provisionNginx ? "Yes" : "No");
   row("RabbitMQ", !r.xrayEnabled ? "N/A (no Xray)" : (r.externalRMQ ? "External" : "Bundled"));
   row("Database", r.dbMode === "external" ? "External (managed/standalone RDBMS)" : "Co-located (provisioned with the deployment)");
+  row("Database instances", r.dbInstances === "dedicated" ? "Dedicated (one instance per product)" : "Shared (one instance, a logical DB per product)");
   const svcList = [];
   if (r.svc.distribution) svcList.push("Distribution");
   if (r.svc.jas) svcList.push("JAS");
@@ -394,6 +395,7 @@ function buildSizingCsv(r) {
   if (r.svc.appTrust) svcList.push("AppTrust + UnifiedPolicy");
   if (r.svc.missionControl) svcList.push("Mission Control");
   if (r.svc.curation) svcList.push("Curation + Catalog");
+  if (r.svc.runtime) svcList.push("Runtime Security");
   row("Optional services", svcList.join("; ") || "None");
   if (r.svc.curation) row("Valkey", r.externalValkey ? "External" : "Co-located");
   blank();
@@ -469,8 +471,8 @@ function buildSizingCsv(r) {
   row("Artifactory", "artifactory", "artifactory", mode);
   if (r.xrayEnabled) row(`Xray${r.svc.jas ? " + JAS" : ""}`, "xraydb", "xray", mode);
   if (r.svc.distribution) row("Distribution", "distribution", "distribution", mode);
-  if (r.svc.missionControl) row("Mission Control", "mission_control", "mission_control", mode);
   if (r.svc.curation) row("Catalog (Curation)", "catalogdb", "catalog", mode);
+  if (r.svc.runtime) row("Runtime Security", "runtime", "runtime", mode);
   blank();
 
   /* External services (recommended, not in footprint) */
@@ -650,7 +652,7 @@ function buildHelmValues(r) {
     p('    password: "<db-password>"');
   }
   p("  artifactory:");
-  const hasArtiExtra = catalogOn || r.svc.appTrust || jasOn || r.svc.workers || r.externalRMQ;
+  const hasArtiExtra = catalogOn || r.svc.appTrust || jasOn || r.svc.workers || r.svc.runtime || r.externalRMQ;
   p("    extraSystemYaml:" + (hasArtiExtra ? "" : " {}"));
   if (catalogOn) {
     p("      artifactory:");
@@ -662,6 +664,7 @@ function buildHelmValues(r) {
   }
   if (r.svc.appTrust) { p("      apptrust:"); p("        enabled: true"); }
   if (jasOn)          { p("      jas:");      p("        enabled: true"); }
+  if (r.svc.runtime)  { p("      runtime:");  p("        enabled: true"); }
   if (r.svc.workers || r.externalRMQ) {
     p("      shared:");
     if (r.svc.workers) {
@@ -725,9 +728,10 @@ function buildHelmValues(r) {
       p('    password: "<db-password>"');
     }
     p("  xray:");
-    p("    extraSystemYaml:" + ((catalogOn || jasOn) ? "" : " {}"));
-    if (catalogOn) { p("      curation:"); p("        enabled: true"); p("      catalog:"); p("        enabled: true"); }
-    if (jasOn)     { p("      jas:");      p("        enabled: true"); }
+    p("    extraSystemYaml:" + ((catalogOn || jasOn || r.svc.runtime) ? "" : " {}"));
+    if (catalogOn)     { p("      curation:"); p("        enabled: true"); p("      catalog:"); p("        enabled: true"); }
+    if (jasOn)         { p("      jas:");      p("        enabled: true"); }
+    if (r.svc.runtime) { p("      runtime:");  p("        enabled: true"); }
     res("  ", xray ? xray.cpu : 8, xray ? xray.memGB : 16);
     p("  persistence:");
     p("    enabled: true");
@@ -814,6 +818,12 @@ function buildHelmValues(r) {
 
   /* PostgreSQL (bundled only in self-contained mode) */
   p("databaseUpgradeReady: true");
+  if (r.dbInstances === "dedicated") {
+    p(external
+      ? "# Dedicated DB instances requested: point each product's database url (above) at its own host."
+      : "# Dedicated DB instances requested: the bundled chart provides ONE PostgreSQL. For separate");
+    if (!external) p("# instances per product, switch to an external DB and give each product its own host.");
+  }
   p("postgresql:");
   if (external) {
     p("  enabled: false   # external database in use");
@@ -827,11 +837,9 @@ function buildHelmValues(r) {
     p("    persistence: { size: " + pgDisk + "Gi }");
     res("    ", artiDb ? Math.min(artiDb.cpu, 8) : 2, artiDb ? Math.min(artiDb.memGB, 16) : 4);
   }
-  p("");
-  p("# Deprecated / unused — explicitly disabled");
-  p("pipelines: { enabled: false }");
-  p("insight:   { enabled: false }");
-  p("mc:        { enabled: false }   # standalone MC deprecated; use artifactory.mc above");
+  // Pipelines, Insight and standalone Mission Control are deprecated and dropped
+  // from the jfrog-platform chart (7.49+) — not emitted here. Mission Control is
+  // configured via artifactory.mc above; Runtime/Workers install as separate releases.
 
   return L.join("\n");
 }
@@ -852,11 +860,13 @@ function buildAnsibleInventory(r) {
   if (r.provisionNginx && nginx) group("nginx", nginx, nginx.replicas);
   if (r.xrayEnabled && xray)     group("xray", xray, xray.replicas);
   if (r.xrayEnabled && !r.externalRMQ && rmq) group("rabbitmq", rmq, rmq.replicas);
+  if (r.svc.runtime) group("runtime", findComp(r, "Runtime (server)"), r.ha ? 2 : 1);
   if (r.dbMode === "colocated")       group("postgresql", null, r.ha ? 2 : 1);
   L.push("[jpd:children]");
   L.push("artifactory");
   if (r.provisionNginx) L.push("nginx");
   if (r.xrayEnabled) L.push("xray");
+  if (r.svc.runtime) L.push("runtime");
   return L.join("\n");
 }
 
@@ -937,20 +947,45 @@ function buildAnsiblePlaybook(r) {
     L.push("    - name: Download & unpack Xray, render its system.yaml, install service");
     L.push("      ansible.builtin.debug: { msg: 'Mirror the Artifactory tasks using the Xray archive; point system.yaml at xraydb" + (r.externalRMQ ? " and the external RabbitMQ" : "") + ".' }");
   }
+  if (r.svc.runtime) {
+    L.push("");
+    L.push("- name: Install JFrog Runtime (server)");
+    L.push("  hosts: runtime");
+    L.push("  become: true");
+    L.push("  vars: { runtime_version: \"1.x.x\", db_host: \"<db-host>\" }");
+    L.push("  tasks:");
+    L.push("    - name: Install the Runtime server, point it at the 'runtime' database and the platform jfrogUrl (:8082)");
+    L.push("      ansible.builtin.debug: { msg: 'Install jfrog-runtime; system.yaml database url = postgres://<db-host>:5432/runtime.' }");
+    L.push("");
+    L.push("- name: Install Runtime sensors (per-node agent — DaemonSet equivalent)");
+    L.push("  hosts: all");
+    L.push("  become: true");
+    L.push("  tasks:");
+    L.push("    - name: Deploy the runtime sensor on every node, registered to the Runtime server");
+    L.push("      ansible.builtin.debug: { msg: 'Install jfrog-runtime-sensors on each VM, pointing at the Runtime server :8082.' }");
+  }
   return L.join("\n");
 }
 
 function buildArtifactPanel(r) {
   if (r.deployment === "k8s") {
     const values = buildHelmValues(r);
-    const cmds = "helm repo add jfrog https://charts.jfrog.io\n" +
-                 "helm repo update\n" +
-                 "kubectl create namespace jfrog\n" +
-                 "helm upgrade --install jfrog jfrog/jfrog-platform -n jfrog -f values.yaml";
+    let cmds = "helm repo add jfrog https://charts.jfrog.io\n" +
+               "helm repo update\n" +
+               "kubectl create namespace jfrog\n" +
+               "helm upgrade --install jfrog jfrog/jfrog-platform -n jfrog -f values.yaml";
+    // Workers and Runtime are NOT part of the jfrog-platform umbrella — separate releases.
+    const extraReleases = [];
+    if (r.svc.workers) extraReleases.push("helm upgrade --install jfrog-worker jfrog/worker -n jfrog -f worker-values.yaml");
+    if (r.svc.runtime) {
+      extraReleases.push("helm upgrade --install jfrog-runtime jfrog/runtime -n jfrog -f runtime-values.yaml");
+      extraReleases.push("helm upgrade --install jfrog-runtime-sensors jfrog/runtime-sensors -n jfrog -f runtime-sensors-values.yaml");
+    }
+    if (extraReleases.length) cmds += "\n\n# Separate releases (not in the jfrog-platform umbrella):\n" + extraReleases.join("\n");
     return `
     <details class="panel">
       <summary style="font-size:14px;">Deployment artifacts — Kubernetes (Helm)</summary>
-      <p style="margin:10px 0 4px; font-size:13px; color:var(--muted);">Deploy with the unified <code>jfrog/jfrog-platform</code> chart (structure mirrors the reference values in <code>jf-k8s/</code>). Mode: <strong>${r.dbMode === "external" ? "external (external PostgreSQL + object-store binarystore)" : "self-contained (bundled PostgreSQL + filesystem PVC)"}</strong>, set by the Database input.</p>
+      <p style="margin:10px 0 4px; font-size:13px; color:var(--muted);">Deploy with the unified <code>jfrog/jfrog-platform</code> chart (structure mirrors the reference values in <code>jf-k8s/</code>). Mode: <strong>${r.dbMode === "external" ? "external (external PostgreSQL + object-store binarystore)" : "self-contained (bundled PostgreSQL + filesystem PVC)"}</strong>, set by the Database input.${r.svc.runtime ? " Runtime Security installs as its own <code>jfrog/runtime</code> release (+ a <code>jfrog/runtime-sensors</code> DaemonSet) — it needs a <code>runtime</code> database." : ""}</p>
       <blockquote style="white-space:pre; font-family:monospace; font-style:normal;">${escapeHtml(cmds)}</blockquote>
       <p style="margin:12px 0 4px; font-size:13px; color:var(--muted);">Generated <code>values.yaml</code> (sizing-derived — validate against your chart version):</p>
       <blockquote style="white-space:pre; font-family:monospace; font-style:normal; max-height:340px; overflow:auto;">${escapeHtml(values)}</blockquote>
@@ -1014,6 +1049,7 @@ function calculate() {
   const deployment    = document.querySelector('input[name="deployment"]:checked').value;
   const ha            = document.querySelector('input[name="ha"]:checked').value === "yes";
   const dbMode        = document.querySelector('input[name="db"]:checked').value;
+  const dbInstances   = document.querySelector('input[name="dbInstances"]:checked').value; // shared | dedicated
   const k8sPlacement  = document.querySelector('input[name="k8sPlacement"]:checked')?.value || "dedicated";
   const topology      = document.querySelector('input[name="topology"]:checked').value;
   const passiveScale  = document.querySelector('input[name="passiveScale"]:checked')?.value || "hot";
@@ -1040,7 +1076,8 @@ function calculate() {
     workers:        document.getElementById("svcWorkers").checked,
     appTrust:       document.getElementById("svcAppTrust").checked,
     missionControl: document.getElementById("svcMissionControl").checked,
-    curation:       document.getElementById("svcCuration").checked
+    curation:       document.getElementById("svcCuration").checked,
+    runtime:        document.getElementById("svcRuntime").checked
   };
 
   // Valkey (Curation/Catalog cache). Co-located folds onto the Catalog nodes;
@@ -1131,27 +1168,7 @@ function calculate() {
     }));
   }
 
-  /* --- Artifactory PostgreSQL --- */
-  {
-    const db = arch.artifactoryDb[tier];
-    const stor = STORAGE.artifactoryDb[tier];
-    const dbDiskGB = Math.max(100, Math.round(binaryTB * 1024 * stor.frac));
-    components.push({
-      name: "PostgreSQL (Artifactory DB)",
-      replicas: dbMode === "colocated" && ha ? 2 : 1,
-      instance: dbMode === "external" ? db.instance : `Co-located ${db.cpu} vCPU / ${db.memGB} GB`,
-      cpu: db.cpu,
-      memGB: db.memGB,
-      diskGB: dbDiskGB,
-      iops: stor.iops,
-      mbps: stor.mbps,
-      note: dbMode === "external"
-        ? `External managed RDBMS (max ${db.maxConns} conns). Disk = 1/3 of binary filestore.`
-        : `Co-located (max ${db.maxConns} conns). Disk = 1/3 of binary filestore. Primary+standby for HA.`
-    });
-  }
-
-  /* --- Xray + RabbitMQ + Xray DB --- */
+  /* --- Xray + RabbitMQ (Xray DB is sized in the consolidated database block below) --- */
   let externalRmqSpec = null;
   if (xrayEnabled) {
     components.push(buildRow("xray", "Xray", {
@@ -1181,21 +1198,6 @@ function calculate() {
         note: `${splitNote} ${quorumNote}`
       }));
     }
-    const xdb = arch.xrayDb[tier];
-    const xdbStor = STORAGE.xrayDb[tier];
-    components.push({
-      name: "PostgreSQL (Xray DB)",
-      replicas: dbMode === "colocated" && ha ? 2 : 1,
-      instance: dbMode === "external" ? xdb.instance : `Co-located ${xdb.cpu} vCPU / ${xdb.memGB} GB`,
-      cpu: xdb.cpu,
-      memGB: xdb.memGB,
-      diskGB: xdbStor.gb,
-      iops: xdbStor.iops,
-      mbps: xdbStor.mbps,
-      note: dbMode === "external"
-        ? `External managed RDBMS (max ${xdb.maxConns} conns).`
-        : `Co-located (max ${xdb.maxConns} conns). Primary+standby for HA.`
-    });
   }
 
   /* --- JAS (Advanced Security) --- */
@@ -1233,15 +1235,9 @@ function calculate() {
       note: "Required alongside AppTrust. 2 CPU / 1 GB / 50 GB."
     });
   }
-  if (svc.missionControl) {
-    components.push({
-      name: "Mission Control",
-      replicas: 1,
-      instance: arch.nginx[tier].instance,
-      cpu: 4, memGB: 8, diskGB: 100, iops: 3000, mbps: 200,
-      note: "Single management plane (not HA)."
-    });
-  }
+  // Mission Control is bundled into Artifactory (a platform service on the
+  // Artifactory router) — no standalone node and no separate database. The
+  // selection only flips on the UI integration (artifactory.mc.enabled in Helm).
 
   /* --- Curation + Catalog (+ Catalog DB, + Valkey co-located or external) --- */
   let externalValkeySpec = null;
@@ -1267,15 +1263,54 @@ function calculate() {
     if (externalValkey) {
       externalValkeySpec = { replicas: ha ? 3 : 1, instance: proxyVM, cpu: 2, memGB: 8, diskGB: 20, iops: 3000, mbps: 200 };
     }
-    const cdb = arch.xrayDb.small;
+  }
+
+  /* --- Runtime Security (separate jfrog/runtime release + per-node sensor DaemonSet) --- */
+  if (svc.runtime) {
     components.push({
-      name: "PostgreSQL (Catalog DB)",
-      replicas: dbMode === "colocated" && ha ? 2 : 1,
-      instance: dbMode === "external" ? cdb.instance : `Co-located ${cdb.cpu} vCPU / ${cdb.memGB} GB`,
-      cpu: cdb.cpu, memGB: cdb.memGB, diskGB: 200, iops: 4000, mbps: 500,
-      note: dbMode === "external"
-        ? `External managed RDBMS (max ${cdb.maxConns} conns) — Catalog metadata store.`
-        : "Co-located — Catalog metadata store. Primary+standby for HA."
+      name: "Runtime (server)",
+      replicas: ha ? 2 : 1,
+      instance: arch.nginx[tier].instance,
+      cpu: 2, memGB: 4, diskGB: 50, iops: 3000, mbps: 200,
+      note: "JFrog Runtime server (separate jfrog/runtime release). Uses its own 'runtime' database. Sensors run as a per-node DaemonSet (no dedicated nodes)."
+    });
+  }
+
+  /* --- Databases: one logical DB per product, hosted on a single shared instance
+         (default) or a dedicated instance per product (dbInstances). --- */
+  const dbProducts = [];
+  {
+    const adb = arch.artifactoryDb[tier], adbStor = STORAGE.artifactoryDb[tier];
+    dbProducts.push({ label:"Artifactory", db:"artifactory", user:"artifactory", cpu:adb.cpu, memGB:adb.memGB,
+      instance:adb.instance, maxConns:adb.maxConns, diskGB:Math.max(100, Math.round(binaryTB*1024*adbStor.frac)), iops:adbStor.iops, mbps:adbStor.mbps });
+    if (xrayEnabled) {
+      const xdb = arch.xrayDb[tier], xdbStor = STORAGE.xrayDb[tier];
+      dbProducts.push({ label:"Xray", db:"xraydb", user:"xray", cpu:xdb.cpu, memGB:xdb.memGB, instance:xdb.instance, maxConns:xdb.maxConns, diskGB:xdbStor.gb, iops:xdbStor.iops, mbps:xdbStor.mbps });
+    }
+    const sdb = arch.xrayDb.small; // small managed-DB SKU for the lighter services
+    if (svc.distribution) dbProducts.push({ label:"Distribution", db:"distribution", user:"distribution", cpu:sdb.cpu, memGB:sdb.memGB, instance:sdb.instance, maxConns:sdb.maxConns, diskGB:100, iops:4000, mbps:500 });
+    if (svc.curation)     dbProducts.push({ label:"Catalog", db:"catalogdb", user:"catalog", cpu:sdb.cpu, memGB:sdb.memGB, instance:sdb.instance, maxConns:sdb.maxConns, diskGB:200, iops:4000, mbps:500 });
+    if (svc.runtime)      dbProducts.push({ label:"Runtime", db:"runtime", user:"runtime", cpu:sdb.cpu, memGB:sdb.memGB, instance:sdb.instance, maxConns:sdb.maxConns, diskGB:50, iops:4000, mbps:500 });
+  }
+  const dbReplicas = dbMode === "colocated" && ha ? 2 : 1;            // primary + standby for self-run HA
+  const dbTotalConns = dbProducts.reduce((s, d) => s + d.maxConns, 0);
+  if (dbInstances === "dedicated" && dbProducts.length > 1) {
+    dbProducts.forEach(d => components.push({
+      name: `PostgreSQL (${d.label} DB)`, replicas: dbReplicas,
+      instance: dbMode === "external" ? d.instance : `Co-located ${d.cpu} vCPU / ${d.memGB} GB`,
+      cpu: d.cpu, memGB: d.memGB, diskGB: d.diskGB, iops: d.iops, mbps: d.mbps,
+      note: `${dbMode === "external" ? `External managed RDBMS (max ${d.maxConns} conns)` : "Co-located"} — dedicated instance for the ${d.label} database (${d.db}).${dbReplicas > 1 ? " Primary+standby for HA." : ""}`
+    }));
+  } else {
+    // Shared: one instance hosting all databases — sized to the dominant (Artifactory)
+    // DB, disk = sum of all DBs, max_connections ≥ sum across products.
+    const big = dbProducts[0]; // Artifactory DB is the largest/dominant
+    const sumDisk = dbProducts.reduce((s, d) => s + d.diskGB, 0);
+    components.push({
+      name: "PostgreSQL (shared)", replicas: dbReplicas,
+      instance: dbMode === "external" ? big.instance : `Co-located ${big.cpu} vCPU / ${big.memGB} GB`,
+      cpu: big.cpu, memGB: big.memGB, diskGB: sumDisk, iops: big.iops, mbps: big.mbps,
+      note: `${dbMode === "external" ? "External managed RDBMS" : "Co-located"} — single instance hosting ${dbProducts.length} database${dbProducts.length === 1 ? "" : "s"} (${dbProducts.map(d => d.db).join(", ")}). Sized to the dominant (Artifactory) DB; set max_connections ≥ ${dbTotalConns}.${dbReplicas > 1 ? " Primary+standby for HA." : ""}`
     });
   }
 
@@ -1320,7 +1355,7 @@ function calculate() {
   const binaryStorageTarget = STORAGE_CLASS[cloud].object;
 
   render({
-    cloud, cloudLabel, deployment, ha, dbMode, k8sPlacement, topology, passiveScale,
+    cloud, cloudLabel, deployment, ha, dbMode, dbInstances, k8sPlacement, topology, passiveScale,
     tier, tierMeta, clientTier, rpmTierKey,
     activeClients, rpm, binaryTB,
     growthPct, activeClientsInput, rpmInput, binaryTBInput, xrayArtifactsInput,
@@ -1328,7 +1363,7 @@ function calculate() {
     lbDisplay, externalLB, provisionNginx,
     externalRMQ, externalRmqSpec,
     valkeyMode, externalValkey, externalValkeySpec,
-    artiDbMaxConns, xrayDbMaxConns,
+    artiDbMaxConns, xrayDbMaxConns, dbProducts, dbTotalConns,
     xrayArtifacts, xrayEnabled, svc,
     components, activeTotals,
     passiveComponents, passiveTotals,
@@ -1360,7 +1395,7 @@ function buildPortsPanel(r) {
     row("8082", "TCP / HTTP", `${r.externalLB ? r.lbDisplay : "Nginx"} → Artifactory`, "JFrog Router — primary upstream for all platform APIs and the UI.");
     row("8081", "TCP / HTTP", `${r.externalLB ? "LB" : "Nginx"} → Artifactory`, "Artifactory service (direct/legacy API path).");
     if (r.ha) row("8081, 8082, 8040", "TCP", "Artifactory ↔ Artifactory (HA replicas)", "HA inter-node: Artifactory, Router, and Access (gRPC) between replicas.");
-    row("5432", "TCP", `Platform nodes → ${externalDb ? "external PostgreSQL" : "co-located PostgreSQL"}`, `PostgreSQL — Artifactory${xray ? ", Xray" : ""}${r.svc.distribution ? ", Distribution" : ""}${r.svc.curation ? ", Catalog" : ""} database(s).`);
+    row("5432", "TCP", `Platform nodes → ${externalDb ? "external PostgreSQL" : "co-located PostgreSQL"}`, `PostgreSQL — Artifactory${xray ? ", Xray" : ""}${r.svc.distribution ? ", Distribution" : ""}${r.svc.curation ? ", Catalog" : ""}${r.svc.runtime ? ", Runtime" : ""} database(s).`);
     if (xray) {
       row("8082", "TCP / HTTP", "Xray ↔ Artifactory (Router)", "Xray indexing pulls + Artifactory → Xray scan/curation requests.");
       row("8000", "TCP / HTTP", "Xray ↔ Xray (internal services)", "Xray server / analysis / indexer / persist microservices.");
@@ -1375,6 +1410,10 @@ function buildPortsPanel(r) {
       if (r.externalValkey && r.ha) row("26379, 16379", "TCP", "Valkey ↔ Valkey (Sentinel / cluster)", "Sentinel quorum + cluster bus (external HA Valkey).");
     }
     if (r.svc.distribution) row("8082", "TCP / HTTP", "Distribution ↔ Artifactory (Router)", "Release-bundle distribution APIs.");
+    if (r.svc.runtime) {
+      row("8082", "TCP / HTTP", "Runtime ↔ Artifactory (Router)", "Runtime server registers with the platform.");
+      row("8082", "TCP / HTTP", "Sensors (every node) → Runtime server", "Per-node sensor agents report to the Runtime server.");
+    }
     notes.push("Internal JFrog microservices (Access, Metadata, Frontend, Observability, Event — typically <code>8040–8049</code>, <code>8070</code>, <code>8086</code>) bind to each node and need no cross-node rule; only Artifactory HA replicas open <code>8081/8082/8040</code> between themselves.");
     if (r.externalLB) notes.push(`The ${r.lbDisplay} health-checks and forwards to Artifactory on <code>8082</code> (or <code>8081</code>).`);
     if (r.topology === "active-passive") notes.push("Active+Passive: also allow cross-site replication — the active Artifactory reaches the passive over <code>443/8082</code> (federation/replication), plus your chosen DB replication path.");
@@ -1390,22 +1429,88 @@ function buildPortsPanel(r) {
     if (rmqBundled) intra.push("RabbitMQ <code>5672</code>");
     if (!externalDb) intra.push("PostgreSQL <code>5432</code>");
     if (r.svc.curation && !r.externalValkey) intra.push("Valkey <code>6379</code>");
+    if (r.svc.runtime) intra.push("Runtime <code>8082</code> (+ sensor DaemonSet on every node)");
     notes.push(`Intra-cluster (pod-to-pod, CNI-handled; allow these in NetworkPolicies if enforced): ${intra.join(" · ")}.`);
     notes.push("Standard cluster ports (kube-apiserver <code>6443</code>, kubelet <code>10250</code>, etcd <code>2379–2380</code>, NodePort <code>30000–32767</code>) are part of your Kubernetes setup, not JFrog-specific.");
     if (r.topology === "active-passive") notes.push("Active+Passive: open cross-cluster ingress on <code>443</code> between sites for federation/replication.");
   }
 
   return `
-    <div class="panel">
-      <h2>Ports &amp; connectivity — ${r.deployment === "k8s" ? "Kubernetes" : "Virtual Machines"}</h2>
-      <p style="margin:0 0 10px; font-size:13px; color:var(--muted);">${intro}</p>
+    <details class="panel">
+      <summary style="font-size:14px;">Ports &amp; connectivity — ${r.deployment === "k8s" ? "Kubernetes" : "Virtual Machines"}</summary>
+      <p style="margin:10px 0 10px; font-size:13px; color:var(--muted);">${intro}</p>
       <table>
         <thead><tr><th>Port(s)</th><th>Protocol</th><th>From → To</th><th>Purpose</th></tr></thead>
         <tbody>${rows.join("")}</tbody>
       </table>
       ${notes.map(n => `<div class="hint" style="margin-top:8px;">${n}</div>`).join("")}
       <div class="hint" style="margin-top:8px;">Defaults shown; ports are configurable in <code>system.yaml</code>. Reference: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/open-ports" target="_blank">JFrog — Network Ports</a>.</div>
-    </div>
+    </details>
+  `;
+}
+
+/* =============================================================================
+   Licensing — maps the selected products to the minimum JFrog self-hosted
+   subscription tier (Pro < Enterprise X < Enterprise+), flags the JAS add-on,
+   and shows how many Artifactory licenses the deployment consumes. Tiers and
+   inclusions change over time — always confirm exact entitlements with JFrog.
+   ============================================================================= */
+// Per-product → minimum subscription tier mapping (single source for the panel + the warning).
+function licenseItems(r) {
+  const items = [];
+  const add = (name, tier, note) => items.push({ name, tier, note });
+  add("Artifactory — core repositories, all package types", "Pro", "Single-node Artifactory is the entry tier.");
+  if (r.ha)             add("High Availability — multi-node Artifactory", "Enterprise X", "HA / multiple Artifactory nodes require Enterprise X or above.");
+  if (r.xrayEnabled)    add("Xray — SCA (security &amp; license scanning)", "Enterprise X", "Included from Enterprise X (also offered as a Pro add-on in some plans).");
+  if (r.svc.jas)        add("JFrog Advanced Security (JAS)", "Enterprise X", "Paid <strong>add-on</strong> on top of an Xray-enabled subscription — Secrets, IaC, SAST, Contextual Analysis, etc.");
+  if (r.svc.workers)    add("Workers — event-driven automation", "Enterprise X", "Entitlement-gated platform feature — confirm inclusion for your plan.");
+  if (r.svc.runtime)    add("Runtime Security (Runtime + sensors)", "Enterprise X", "Part of JFrog's runtime security offering — paid add-on / entitlement on top of the security subscription; confirm with JFrog.");
+  if (r.svc.distribution) add("Distribution — release bundles &amp; Edge nodes", "Enterprise+", "Enterprise+; Edge nodes additionally carry their own Edge license.");
+  if (r.svc.missionControl) add("Mission Control — Topology / management plane", "Enterprise+", "Enterprise+ feature (bundled into Artifactory).");
+  if (r.svc.curation)   add("Curation + Catalog", "Enterprise+", "Requires Enterprise+ (or a dedicated Curation entitlement).");
+  if (r.svc.appTrust)   add("AppTrust + Unified Policy", "Enterprise+", "Release-lifecycle / evidence — Enterprise+ (newer products may need a specific entitlement).");
+  if (r.topology === "active-passive") add("Active + Passive DR — multi-site &amp; Federation", "Enterprise+", "Multi-site, Federated repositories and Access Federation are Enterprise+.");
+  return items;
+}
+function licenseEffectiveTier(r) {
+  const TIERS = ["Pro", "Enterprise X", "Enterprise+"];
+  return licenseItems(r).reduce((m, it) => TIERS.indexOf(it.tier) > TIERS.indexOf(m) ? it.tier : m, "Pro");
+}
+
+function buildLicensePanel(r) {
+  const items     = licenseItems(r);
+  const effective = licenseEffectiveTier(r);
+  const effClass  = effective === "Enterprise+" ? "danger" : effective === "Enterprise X" ? "warn" : "ok";
+
+  // Artifactory licenses consumed = one per Artifactory node (per HA node, per site).
+  const arti = findComp(r, "Artifactory");
+  const activeArti = arti ? arti.replicas : 1;
+  const passiveArti = (r.passiveComponents || []).filter(c => c.name === "Artifactory").reduce((s, c) => s + c.replicas, 0);
+  const totalArti = activeArti + passiveArti;
+
+  const rows = items.map(it => {
+    const cls = it.tier === "Enterprise+" ? "danger" : it.tier === "Enterprise X" ? "warn" : "ok";
+    return `<tr><td><strong>${it.name}</strong></td><td><span class="chip ${cls}">${it.tier}</span></td><td><span class="hint">${it.note}</span></td></tr>`;
+  }).join("");
+
+  return `
+    <details class="panel">
+      <summary style="font-size:14px;">Licensing — minimum subscription: ${effective}</summary>
+      <div class="notice ${effClass}" style="margin-top:10px;">
+        <strong>Minimum subscription for this configuration: ${effective}.</strong>
+        ${r.svc.jas ? " Plus the <strong>JFrog Advanced Security</strong> add-on (on top of the Xray entitlement)." : ""}
+        One subscription licenses the whole JFrog Platform Deployment (JPD) — Xray, Distribution, Mission Control, etc. are entitlements within that tier, not separately-licensed servers.
+      </div>
+      <table>
+        <thead><tr><th>Product / capability</th><th>Min. subscription</th><th>Notes</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="hint" style="margin-top:10px;"><strong>License count:</strong> HA consumes one Artifactory license per node — this deployment uses <strong>${totalArti}</strong> Artifactory license${totalArti === 1 ? "" : "s"}${r.topology === "active-passive" ? ` (${activeArti} active + ${passiveArti} passive)` : ""} from your license bucket.${r.svc.distribution ? " Distribution Edge nodes are licensed separately (Edge licenses)." : ""}</div>
+      <div class="hint" style="margin-top:6px;"><strong>How it's applied:</strong> ${r.deployment === "k8s"
+        ? "supply the license to the Helm chart via a Secret (<code>artifactory.license.secret</code> / <code>licenseKey</code>) or post-install through the UI / Access API."
+        : "drop <code>artifactory.lic</code> into <code>$JFROG_HOME/artifactory/var/etc/artifactory/</code> (or apply via the UI / Access API) at install time."}</div>
+      <div class="hint" style="margin-top:6px;">Subscription tiers, inclusions and pricing change over time — <strong>confirm exact entitlements with your JFrog account team</strong>. Reference: <a href="https://jfrog.com/pricing/" target="_blank">JFrog subscriptions</a> &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/manage-the-artifactory-license" target="_blank">Managing the license</a>.</div>
+    </details>
   `;
 }
 
@@ -1470,6 +1575,11 @@ function render(r) {
   if (r.xrayArtifacts > 10000000)        warnings.push({type:"danger", text:"Indexed artifacts exceed 10M — contact JFrog Support."});
   if (r.svc.jas && !r.xrayEnabled)       warnings.push({type:"warn",   text:"JAS requires Xray. Enable Xray or uncheck JAS — it has been skipped."});
   if (r.deployment === "k8s")            warnings.push({type:"info",   text:"<strong>Kubernetes:</strong> the per-replica vCPU/RAM below represent the worker-node capacity each pod needs. JFrog's Helm chart sizing presets (in <code>jfrog/charts</code>) define authoritative per-pod requests/limits — typically smaller because requests are floors, not host totals."});
+  {
+    const licTier = licenseEffectiveTier(r);
+    warnings.push({type: licTier === "Enterprise+" ? "warn" : "info",
+      text:`<strong>Licensing:</strong> this configuration needs at least a <strong>${licTier}</strong> self-hosted subscription${r.svc.jas ? " plus the <strong>JFrog Advanced Security</strong> add-on" : ""}${r.svc.runtime ? " plus the <strong>Runtime Security</strong> entitlement" : ""}. See the Licensing section for the per-product breakdown and license count. Confirm exact entitlements with your JFrog account team.`});
+  }
 
   if (warnings.length) {
     html += `<div class="panel"><h2>Notes &amp; warnings</h2>`;
@@ -1671,9 +1781,12 @@ function render(r) {
   html += clusterSection(isAP ? "Active site" : "Cluster", r.components);
   if (isAP) html += clusterSection("Passive site", r.passiveComponents);
 
+  /* Licensing */
+  html += buildLicensePanel(r);
+
   /* Co-location rules */
   html += `
-    <details class="panel" open>
+    <details class="panel">
       <summary style="font-size:14px;">Co-location rules (from JFrog reference architecture)</summary>
       <table>
         <thead><tr><th>Rule</th><th>Relation</th><th>Applies to</th></tr></thead>
@@ -1706,8 +1819,12 @@ function render(r) {
     }
   }
   if (r.svc.jas && r.xrayEnabled) applied.push("JAS deployed on its own dedicated VM (Xray protection rule).");
+  if (r.svc.missionControl) applied.push("Mission Control bundled into Artifactory (platform service on the router) — no standalone node or database.");
   if (r.svc.curation) {
     applied.push(`Curation + Catalog deployed on dedicated nodes, with a Catalog database (catalogdb). Valkey is ${r.externalValkey ? "external (provisioned separately — see below)" : "co-located on the Catalog nodes (+8 GB RAM, no new VMs)"}.`);
+  }
+  if (r.svc.runtime) {
+    applied.push("Runtime Security deployed as separate releases — a Runtime server (its own 'runtime' DB) plus a per-node sensor DaemonSet (no dedicated nodes). UI integration via runtime.enabled on Artifactory + Xray.");
   }
   if (!r.externalLB) {
     applied.push("JFrog bundled Nginx provides reverse proxy / TLS termination (dedicated VM/node per replica).");
@@ -1736,9 +1853,9 @@ function render(r) {
   const sc = STORAGE_CLASS[r.cloud];
   const bs = BINARY_STORE[r.cloud];
   html += `
-    <div class="panel">
-      <h2>Storage &amp; network — ${r.cloudLabel}</h2>
-      <table>
+    <details class="panel">
+      <summary style="font-size:14px;">Storage &amp; network — ${r.cloudLabel}</summary>
+      <table style="margin-top:10px;">
         <tbody>
           <tr><td><strong>Service disks (block)</strong></td><td>${sc.block} — sized per-tier (Artifactory 500/1000 GB, Xray 100/200 GB, RabbitMQ 100 GB, JAS 300 GB)</td></tr>
           <tr><td><strong>Database disks</strong></td><td>${sc.premium} — Artifactory DB ≈ 1/3 of filestore; Xray DB 500–2500 GB per tier; IOPS 4K–20K</td></tr>
@@ -1749,7 +1866,7 @@ function render(r) {
           ${r.deployment === "k8s" ? `<tr><td><strong>Kubernetes</strong></td><td>${K8S_NOTES[r.cloud]}</td></tr>` : ""}
         </tbody>
       </table>
-    </div>
+    </details>
   `;
 
   /* Ports & connectivity */
@@ -1760,24 +1877,24 @@ function render(r) {
     const dbs = [{ svc:"Artifactory", db:"artifactory", user:"artifactory", note:"Core platform metadata — always required." }];
     if (r.xrayEnabled) dbs.push({ svc:`Xray${r.svc.jas ? " + JAS" : ""}`, db:"xraydb", user:"xray", note:`Scan results & component graph.${r.svc.jas ? " JAS shares the Xray database — no separate DB." : ""}` });
     if (r.svc.distribution) dbs.push({ svc:"Distribution", db:"distribution", user:"distribution", note:"Release-bundle metadata." });
-    if (r.svc.missionControl) dbs.push({ svc:"Mission Control", db:"mission_control", user:"mission_control", note:"Management-plane data." });
     if (r.svc.curation) dbs.push({ svc:"Catalog (Curation)", db:"catalogdb", user:"catalog", note:"Package-metadata catalog for Curation." });
+    if (r.svc.runtime) dbs.push({ svc:"Runtime Security", db:"runtime", user:"runtime", note:"Runtime server data (separate jfrog/runtime release)." });
 
     const newer = [];
     if (r.svc.workers)  newer.push("Workers");
     if (r.svc.appTrust) newer.push("AppTrust + Unified Policy");
 
     const dbHost = { aws:"my-rds-endpoint.rds.amazonaws.com", azure:"my-flexible-server.postgres.database.azure.com", gcp:"my-cloudsql-ip", onprem:"db-host" }[r.cloud];
-    const totalConns = r.artiDbMaxConns + (r.xrayEnabled ? r.xrayDbMaxConns : 0);
+    const totalConns = r.dbTotalConns || (r.artiDbMaxConns + (r.xrayEnabled ? r.xrayDbMaxConns : 0));
 
     html += `
-    <details class="panel" open>
+    <details class="panel">
       <summary style="font-size:14px;">Database setup — required databases, users &amp; configuration</summary>
       <div class="notice info" style="margin-top:10px;">
         ${r.dbMode === "external"
           ? `Create the databases below in your managed PostgreSQL (RDS / Cloud SQL / Flexible Server); JFrog connects over JDBC.`
           : `Create the databases below in your co-located PostgreSQL (the Helm chart's bundled DB on K8s, or a primary${r.ha ? " + standby for HA" : ""}).`}
-        Each JFrog service needs its <strong>own database</strong> — they are not shared.
+        Each product gets its <strong>own logical database</strong>${(r.dbProducts || []).length > 1 ? `, all on <strong>${r.dbInstances === "dedicated" ? `${r.dbProducts.length} dedicated instances (one per product)` : "a single shared instance"}</strong>` : ""}.
       </div>
       <table>
         <thead><tr><th>Service</th><th>Database</th><th>DB user</th><th>Notes</th></tr></thead>
@@ -1800,7 +1917,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
     password: "&lt;password&gt;"</blockquote>
       <ul style="margin:4px 0 10px; padding-left:20px; color:var(--muted); font-size:13px; line-height:1.7;">
         <li><strong>Version:</strong> use a JFrog-supported PostgreSQL version (currently PostgreSQL 13–16 depending on release — confirm in the system requirements). UTF8 encoding is mandatory.</li>
-        <li><strong>Connections:</strong> set <code>max_connections</code> on the server to at least <strong>${totalConns.toLocaleString()}</strong> (Artifactory ${r.artiDbMaxConns}${r.xrayEnabled ? ` + Xray ${r.xrayDbMaxConns}` : ""}) plus headroom for this tier.</li>
+        <li><strong>Connections:</strong> ${r.dbInstances === "dedicated" ? "size each instance for its product's connection cap" : `a shared instance needs <code>max_connections</code> ≥ <strong>${totalConns.toLocaleString()}</strong> (sum across all product databases)`} plus headroom for this tier.</li>
         <li><strong>Driver:</strong> JFrog bundles the PostgreSQL JDBC driver; for other engines (rarely supported) supply the driver JAR.</li>
         ${r.dbMode === "colocated" && r.ha ? `<li><strong>HA:</strong> run a primary + synchronous standby (or Patroni / repmgr) with automatic failover; the sizing above provisions 2 DB nodes per service.</li>` : ""}
         ${isAP ? `<li><strong>Active+Passive:</strong> run an independent database (or a cross-region read replica promoted on failover) at each site — size each site identically.</li>` : ""}
@@ -1895,7 +2012,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
       <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <code>/reference-architecture/self-managed/deployment/sizing/{aws,azure,gcp}/</code> pages. Replicas by tier — Artifactory 1/2/3/4/6, Nginx and Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3, JAS 1/1/1/1/1.</p>
       <p><strong>Storage sizing</strong> (disk, IOPS, throughput) is from the JFrog storage specification page: Artifactory 500→1000 GB, Xray 100→200 GB, RabbitMQ 100 GB, JAS 300 GB; Artifactory DB = 1/3 of filestore at 4K–20K IOPS; Xray DB 500–2500 GB at 4K–12K IOPS.</p>
       <p><strong>Co-location</strong>: Distribution is co-located onto Artifactory nodes (no extra VMs, +200 GB to Artifactory disk). Artifactory, Nginx, Xray, JAS each require a dedicated VM per replica. RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts.</p>
-      <p><strong>Optional services</strong> (Workers, AppTrust + UnifiedPolicy, Mission Control) come from the JFrog hardware sizing matrix (not the per-cloud reference architecture) — Workers 4/4/50, AppTrust &amp; UnifiedPolicy each 2/1/50, Mission Control 4/8/100.</p>
+      <p><strong>Optional services</strong> (Workers, AppTrust + UnifiedPolicy) come from the JFrog hardware sizing matrix (not the per-cloud reference architecture) — Workers 4/4/50, AppTrust &amp; UnifiedPolicy each 2/1/50. <strong>Mission Control</strong> is bundled into Artifactory (a platform service on the router) — it adds no standalone node or database; selecting it only enables the UI integration (<code>artifactory.mc.enabled</code>). <strong>Runtime Security</strong> installs as separate releases (<code>jfrog/runtime</code> + <code>jfrog/runtime-sensors</code>): a Runtime server (its own <code>runtime</code> DB) plus a per-node sensor DaemonSet that adds no dedicated nodes. <strong>Workers</strong> and <strong>Runtime</strong> are not part of the <code>jfrog-platform</code> umbrella chart. Deprecated products (Pipelines, Insight, standalone Mission Control) are not emitted in the deployment artifacts (dropped from the chart in 7.49+).</p>
       <p><strong>Onprem</strong>: JFrog does not publish a dedicated onprem sizing table, so this calculator mirrors the cloud CPU/RAM as generic VM sizes.</p>
       <p><strong>VM vs Kubernetes</strong>: capacity numbers are identical — they describe the worker-node footprint either way. On Kubernetes, per-pod <code>requests</code>/<code>limits</code> come from the JFrog Helm chart sizing presets and are typically smaller than the full VM allocation.</p>
     </details>
