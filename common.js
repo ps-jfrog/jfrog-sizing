@@ -697,12 +697,30 @@ function buildHelmValues(r) {
     p("      # Self-contained: filesystem PVC (per helm-values-k8s.yaml). For the recommended");
     p("      # object store (" + BINARY_STORE[r.cloud].best.name + "), use external mode.");
   }
+  if (!r.provisionNginx) {
+    // No bundled Nginx: the nginx Service (normal entry point) is gone, so the
+    // Artifactory router service must be exposed to the external LB directly.
+    const svcType = r.cloud === "onprem" ? "NodePort" : "LoadBalancer";
+    p("    service:");
+    p("      type: " + svcType + "   # expose Artifactory router :8082 to the external LB ("
+      + (svcType === "LoadBalancer" ? "cloud LB provisions to this Service)" : "external/hardware LB targets the node port)"));
+  }
   p("  nginx:");
-  p("    enabled: " + (r.provisionNginx ? "true" : "false   # external load balancer fronts the platform"));
   if (r.provisionNginx) {
+    p("    enabled: true");
     p("    replicaCount: " + (nginx ? nginx.replicas : 1));
     p("    service: { type: ClusterIP }");
     res("    ", nginx ? nginx.cpu : 4, nginx ? nginx.memGB : 8);
+  } else {
+    p("    enabled: false   # no bundled Nginx — the external LB fronts Artifactory directly (service above)");
+    p("  # With Nginx OFF the LB/Ingress must terminate TLS, forward X-Forwarded-* and set the platform");
+    p("  # base URL (Administration → General, or X-JFrog-Override-Base-Url), and allow large uploads.");
+    p("  # Alternatively front Artifactory with a cluster Ingress instead of a LoadBalancer Service:");
+    p("  ingress:");
+    p("    enabled: false");
+    p('    className: "<ingress-class>"');
+    p('    hosts: ["<artifactory-host>"]');
+    p('    # tls: [{ secretName: "<tls-secret>", hosts: ["<artifactory-host>"] }]');
   }
   if (r.svc.appTrust) { p("  apptrust:"); p("    enabled: true"); p("  unifiedpolicy:"); p("    enabled: true"); }
   p("  mc:");
@@ -1997,7 +2015,7 @@ function render(r) {
           <tr><td><strong>Database disks</strong></td><td>${sc.premium} — Artifactory DB ≈ 1/3 of filestore; Xray DB 500–2500 GB per tier; IOPS 4K–20K</td></tr>
           <tr><td><strong>Binary / artifact backend</strong></td><td><strong>${bs.best.name}</strong> <span class="chip ok">JFrog recommended</span> — sized at <strong>${r.binaryTB} TB</strong>${isMulti ? " per site" : ""}. <span class="hint">binarystore.xml: <code>${bs.best.template}</code>. ${bs.best.note}</span><div class="hint" style="margin-top:4px;">Other options: ${bs.alternatives.map(a => `${a.name} (<code>${a.template}</code>)`).join(" · ")}.</div></td></tr>
           ${r.cacheFsGB > 0 ? `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>${sc.block} — <strong>${fmtGB(r.cacheFsGB)}</strong> local SSD per Artifactory replica (${r.cacheFsPct}% of filestore); fronts ${sc.object} so hot artifacts are served at local-disk latency</td></tr>` : `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>Disabled — every binary read hits ${sc.object} directly. Enable for better performance with object storage.</td></tr>`}
-          <tr><td><strong>Load balancer / ingress</strong></td><td><strong>${r.lbDisplay}</strong> — ${r.externalLB ? (r.provisionNginx ? "Nginx provisioned behind the LB for advanced proxy features." : "no dedicated Nginx tier; the LB terminates TLS and routes to Artifactory's built-in router.") : "bundled Nginx reverse proxy on a dedicated VM/node per replica."}${r.deployment === "k8s" ? " On K8s, expose it via the cluster ingress / cloud LB service." : ""}${isAP ? " Provide a global/cross-site LB or DNS failover to direct traffic to the active site." : ""}${isAA ? " Provide a global LB / GSLB (geo or weighted DNS) to distribute clients across both active sites." : ""} <span class="hint">Config: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a>${r.externalLB ? ` &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/http-settings" target="_blank">HTTP Settings</a>` : ""}.</span></td></tr>
+          <tr><td><strong>Load balancer / ingress</strong></td><td><strong>${r.lbDisplay}</strong> — ${r.externalLB ? (r.provisionNginx ? "Nginx provisioned behind the LB for advanced proxy features." : "no dedicated Nginx tier; the LB terminates TLS and routes to Artifactory's built-in router. On K8s the chart sets nginx.enabled:false and exposes the Artifactory service (LoadBalancer/NodePort or Ingress) for the LB to target.") : "bundled Nginx reverse proxy on a dedicated VM/node per replica."}${r.deployment === "k8s" ? " On K8s, expose it via the cluster ingress / cloud LB service." : ""}${isAP ? " Provide a global/cross-site LB or DNS failover to direct traffic to the active site." : ""}${isAA ? " Provide a global LB / GSLB (geo or weighted DNS) to distribute clients across both active sites." : ""} <span class="hint">Config: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a>${r.externalLB ? ` &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/http-settings" target="_blank">HTTP Settings</a>` : ""}.</span></td></tr>
           <tr><td><strong>Network</strong></td><td>${NETWORK_REC[r.cloud]}</td></tr>
           ${r.deployment === "k8s" ? `<tr><td><strong>Kubernetes</strong></td><td>${K8S_NOTES[r.cloud]}</td></tr>` : ""}
         </tbody>
