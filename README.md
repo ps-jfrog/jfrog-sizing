@@ -1,5 +1,9 @@
 # JFrog Platform Deployment (JPD) Sizing Calculator
 
+> **⚠️ Work in Progress — Internal Use Only**
+>
+> This tool is under active development and is intended for **internal JFrog consumption only**. It is **not officially supported by JFrog** and carries no warranty or guarantee of accuracy. It is built and maintained on a best-effort basis by **Professional Services (PS)**. Always validate any sizing output with your JFrog Solutions Engineer before making procurement or architecture decisions.
+
 HTML calculators that translate workload inputs (active clients, RPM, indexed artifacts, storage, topology) into a fully spec'd JPD deployment — instance types, replica counts, storage IOPS, co-location rules, and a procurement list — for AWS, Azure, GCP, and Private Datacenter, on either VMs or Kubernetes.
 
 Sizing values are pulled verbatim from JFrog's published documentation:
