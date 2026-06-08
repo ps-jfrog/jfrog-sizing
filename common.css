@@ -20,6 +20,15 @@
     font-size: 14px;
     line-height: 1.5;
   }
+  .wip-banner {
+    padding: 12px 32px;
+    background: rgba(245, 166, 35, 0.12);
+    border-bottom: 1px solid var(--warn);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .wip-banner strong { color: var(--warn); }
   header {
     padding: 22px 32px;
     border-bottom: 1px solid var(--border);
