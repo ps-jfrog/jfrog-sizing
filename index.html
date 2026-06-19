@@ -73,15 +73,15 @@
     </div>
 
     <div class="field">
-      <label>Active concurrent clients (Artifactory)</label>
+      <label>Peak Concurrent Connections (cluster-wide)</label>
       <input type="number" id="activeClients" min="0" value="80" />
-      <div class="hint">Hardware sizing matrix tiers: ≤20, ≤100, ≤200, &gt;200 (support).</div>
+      <div class="hint">Total number of active HTTP threads serving requests across the entire Artifactory cluster at any given moment. Reference architecture tiers: Small ≤100, Medium ≤500, Large ≤1,200, XLarge ≤3,000, 2XLarge ≤6,000.</div>
     </div>
 
     <div class="field">
-      <label>Requests per minute (RPM) — peak</label>
+      <label>Peak Requests Per Minute (RPM) — cluster-wide</label>
       <input type="number" id="rpm" min="0" value="20000" />
-      <div class="hint">Reference architecture tiers: Small ≤6K, Medium ≤50K, Large ≤100K, XLarge ≤200K, 2XLarge ≤500K.</div>
+      <div class="hint">Total number of HTTP requests handled collectively by all nodes in the Artifactory cluster within a minute. Reference architecture tiers: Small ≤6K, Medium ≤50K, Large ≤100K, XLarge ≤200K, 2XLarge ≤500K.</div>
     </div>
 
     <div class="field">
@@ -151,7 +151,7 @@
       <div class="hint">Route to Artifactory: the LB terminates TLS and hits Artifactory's built-in router — no NGINX VMs provisioned. Route to NGINX: keep the NGINX tier behind the LB for advanced rewrite/proxy features.</div>
     </div>
 
-    <div class="field">
+    <div class="field" id="rmqField">
       <label>RabbitMQ (Xray messaging)</label>
       <div class="radio-group" data-name="rmq">
         <label><input type="radio" name="rmq" value="bundled" checked /> Bundled with platform</label>
@@ -220,11 +220,13 @@
   <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/gcp/" target="_blank">GCP</a> &middot;
   <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/storage/" target="_blank">Storage</a> &middot;
   <a href="https://docs.jfrog.com/installation/docs/hardware-sizing-matrix" target="_blank">Hardware Sizing Matrix</a>.
-  <br>External services:
-  <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configuring-the-database" target="_blank">Database</a> &middot;
-  <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/external-rabbitmq" target="_blank">RabbitMQ</a> &middot;
-  <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a> &middot;
-  <a href="https://jfrog.com/help/r/jfrog-curation-documentation/jfrog-curation" target="_blank">Curation / Catalog</a>.
+  <br>Installation &amp; configuration:
+  <a href="https://docs.jfrog.com/installation/docs/configuring-the-database" target="_blank">Database</a> &middot;
+  <a href="https://docs.jfrog.com/installation/docs/external-rabbitmq" target="_blank">RabbitMQ</a> &middot;
+  <a href="https://docs.jfrog.com/installation/docs/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a> &middot;
+  <a href="https://docs.jfrog.com/installation/docs/open-ports" target="_blank">Network Ports</a> &middot;
+  <a href="https://docs.jfrog.com/installation/docs/install-jfrog-platform-using-helm-charts" target="_blank">Helm Charts</a> &middot;
+  <a href="https://docs.jfrog.com/jfrog-curation-documentation/jfrog-curation" target="_blank">Curation / Catalog</a>.
   Validate with your JFrog SE before procurement.
 </footer>
 
