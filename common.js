@@ -1749,7 +1749,7 @@ function buildArtifactPanel(r) {
       <p style="margin:12px 0 4px; font-size:13px; color:var(--muted);">Generated <code>values.yaml</code> (sizing-derived — validate against your chart version):</p>
       <blockquote style="white-space:pre; font-family:monospace; font-style:normal; max-height:340px; overflow:auto;">${escapeHtml(values)}</blockquote>
       <button class="export" id="artifactBtn">⤓ Download values.yaml</button>
-      <div class="hint" style="margin-top:8px;">Secrets are placeholders — supply <code>masterKey</code>/<code>joinKey</code>/DB &amp; Valkey passwords via Kubernetes Secrets. Resources use burstable QoS (requests ≈ 50%, limits = full tier). Autoscaling bounds are derived from the sized replica count. Reference: <a href="https://docs.jfrog.com/installation/docs/install-jfrog-platform-using-helm-charts" target="_blank">Install JFrog Platform with Helm</a>.</div>
+      <div class="hint" style="margin-top:8px;">Secrets are placeholders — supply <code>masterKey</code>/<code>joinKey</code>/DB &amp; Valkey passwords via Kubernetes Secrets. Resources use burstable QoS (requests ≈ 50%, limits = full tier). Autoscaling bounds are derived from the sized replica count. Reference: <a href="https://docs.jfrog.com/installation/docs/helm-charts-for-advanced-users" target="_blank">Install JFrog Platform with Helm</a>.</div>
     </details>`;
   }
   const inv = buildAnsibleInventory(r);
@@ -1766,7 +1766,7 @@ function buildArtifactPanel(r) {
       <p style="margin:12px 0 4px; font-size:13px; color:var(--muted);"><strong>templates/system.yaml.j2</strong>:</p>
       <blockquote style="white-space:pre; font-family:monospace; font-style:normal; max-height:240px; overflow:auto;">${escapeHtml(sys)}</blockquote>
       <button class="export" id="artifactBtn">⤓ Download Ansible bundle</button>
-      <div class="hint" style="margin-top:8px;">Reference: <a href="https://docs.jfrog.com/installation/docs/installing-artifactory" target="_blank">Installing Artifactory</a> &middot; <a href="https://docs.jfrog.com/installation/docs/system-yaml-configuration-file" target="_blank">system.yaml</a>.</div>
+      <div class="hint" style="margin-top:8px;">Reference: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/installing-artifactory" target="_blank">Installing Artifactory</a> &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/system-yaml-configuration-file" target="_blank">system.yaml</a>.</div>
     </details>`;
 }
 
@@ -2213,7 +2213,7 @@ function buildPortsPanel(r) {
         <tbody>${rows.join("")}</tbody>
       </table>
       ${notes.map(n => `<div class="hint" style="margin-top:8px;">${n}</div>`).join("")}
-      <div class="hint" style="margin-top:8px;">Defaults shown; ports are configurable in <code>system.yaml</code>. Reference: <a href="https://docs.jfrog.com/installation/docs/open-ports" target="_blank">JFrog — Network Ports</a>.</div>
+      <div class="hint" style="margin-top:8px;">Defaults shown; ports are configurable in <code>system.yaml</code>. Reference: <a href="https://docs.jfrog.com/installation/docs/network-requirements-for-jfrog-products" target="_blank">JFrog — Network Ports</a>.</div>
     </details>
   `;
 }
@@ -2415,7 +2415,7 @@ function buildLicensePanel(r) {
       <div class="hint" style="margin-top:6px;"><strong>How it's applied:</strong> ${r.deployment === "k8s"
         ? "supply the license to the Helm chart via a Secret (<code>artifactory.license.secret</code> / <code>licenseKey</code>) or post-install through the UI / Access API."
         : "drop <code>artifactory.lic</code> into <code>$JFROG_HOME/artifactory/var/etc/artifactory/</code> (or apply via the UI / Access API) at install time."}</div>
-      <div class="hint" style="margin-top:6px;">Subscription tiers, inclusions and pricing change over time — <strong>confirm exact entitlements with your JFrog account team</strong>. Reference: <a href="https://jfrog.com/pricing/" target="_blank">JFrog subscriptions</a> &middot; <a href="https://docs.jfrog.com/installation/docs/manage-the-artifactory-license" target="_blank">Managing the license</a>.</div>
+      <div class="hint" style="margin-top:6px;">Subscription tiers, inclusions and pricing change over time — <strong>confirm exact entitlements with your JFrog account team</strong>. Reference: <a href="https://jfrog.com/pricing/" target="_blank">JFrog subscriptions</a> &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/manage-the-artifactory-license" target="_blank">Managing the license</a>.</div>
     </details>
   `;
 }
@@ -2778,7 +2778,7 @@ function render(r) {
           <tr><td><strong>Database disks</strong></td><td>${sc.premium} — Artifactory DB ≈ 1/3 of filestore; Xray DB 500–2500 GB per tier; IOPS 4K–20K</td></tr>
           <tr><td><strong>Binary / artifact backend</strong></td><td><strong>${bs.best.name}</strong> <span class="chip ok">JFrog recommended</span> — sized at <strong>${r.binaryTB} TB</strong>${isMulti ? " per site" : ""}. <span class="hint">binarystore.xml: <code>${bs.best.template}</code>. ${bs.best.note}</span><div class="hint" style="margin-top:4px;">Other options: ${bs.alternatives.map(a => `${a.name} (<code>${a.template}</code>)`).join(" · ")}.</div></td></tr>
           ${r.cacheFsGB > 0 ? `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>${sc.block} — <strong>${fmtGB(r.cacheFsGB)}</strong> local SSD per Artifactory replica (${r.cacheFsPct}% of filestore); fronts ${sc.object} so hot artifacts are served at local-disk latency</td></tr>` : `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>Disabled — every binary read hits ${sc.object} directly. Enable for better performance with object storage.</td></tr>`}
-          <tr><td><strong>Load balancer / ingress</strong></td><td><strong>${r.lbDisplay}</strong> — ${r.externalLB ? (r.provisionNginx ? "Nginx provisioned behind the LB for advanced proxy features." : "no dedicated Nginx tier; the LB terminates TLS and routes to Artifactory's built-in router. On K8s the chart sets nginx.enabled:false and exposes the Artifactory service (LoadBalancer/NodePort or Ingress) for the LB to target.") : "bundled Nginx reverse proxy on a dedicated VM/node per replica."}${r.deployment === "k8s" ? " On K8s, expose it via the cluster ingress / cloud LB service." : ""}${isAP ? " Provide a global/cross-site LB or DNS failover to direct traffic to the active site." : ""}${isAA ? " Provide a global LB / GSLB (geo or weighted DNS) to distribute clients across both active sites." : ""} <span class="hint">Config: <a href="https://docs.jfrog.com/installation/docs/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a>${r.externalLB ? ` &middot; <a href="https://docs.jfrog.com/installation/docs/http-settings" target="_blank">HTTP Settings</a>` : ""}.</span></td></tr>
+          <tr><td><strong>Load balancer / ingress</strong></td><td><strong>${r.lbDisplay}</strong> — ${r.externalLB ? (r.provisionNginx ? "Nginx provisioned behind the LB for advanced proxy features." : "no dedicated Nginx tier; the LB terminates TLS and routes to Artifactory's built-in router. On K8s the chart sets nginx.enabled:false and exposes the Artifactory service (LoadBalancer/NodePort or Ingress) for the LB to target.") : "bundled Nginx reverse proxy on a dedicated VM/node per replica."}${r.deployment === "k8s" ? " On K8s, expose it via the cluster ingress / cloud LB service." : ""}${isAP ? " Provide a global/cross-site LB or DNS failover to direct traffic to the active site." : ""}${isAA ? " Provide a global LB / GSLB (geo or weighted DNS) to distribute clients across both active sites." : ""} <span class="hint">Config: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a>${r.externalLB ? ` &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/http-settings" target="_blank">HTTP Settings</a>` : ""}.</span></td></tr>
           <tr><td><strong>Network</strong></td><td>${NETWORK_REC[r.cloud]}</td></tr>
           ${r.deployment === "k8s" ? `<tr><td><strong>Kubernetes</strong></td><td>${K8S_NOTES[r.cloud]}</td></tr>` : ""}
         </tbody>
@@ -2841,7 +2841,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
         ${isAA ? `<li><strong>Active+Active:</strong> each active site runs its own independent database (sized identically). Data sync is via Artifactory federation, not DB-level replication.</li>` : ""}
         <li><strong>TLS:</strong> enable <code>sslmode=verify-full</code> in the JDBC URL for encrypted connections to the database.</li>
       </ul>
-      <div class="hint">Reference: <a href="https://docs.jfrog.com/installation/docs/configuring-the-database" target="_blank">JFrog — Configuring the Database (PostgreSQL)</a>.</div>
+      <div class="hint">Reference: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configuring-the-database" target="_blank">JFrog — Configuring the Database (PostgreSQL)</a> &middot; <a href="https://jfrog.com/help/r/xray-tuning-and-maximizing-your-xray-s-database/xray-tuning-and-maximizing-your-xray-s-database" target="_blank">Xray — Database connection sizing &amp; tuning</a>.</div>
     </details>
   `;
   }
@@ -2884,7 +2884,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
         ${isMulti ? `<li><strong>${isAA ? "Active+Active" : "Active+Passive"}:</strong> run an independent external RabbitMQ cluster at each site (Xray does not replicate RMQ across sites) — the recommended size applies per site.</li>` : ""}
       </ul>
       <div class="hint">Externalizing RabbitMQ moves the messaging capacity off the JFrog nodes but does not eliminate it — size your external cluster at least as large as the recommendation above. The same applies to an external load balancer: it runs on its own (often managed/auto-scaled) infrastructure, which is why neither appears in the node totals.</div>
-      <div class="hint" style="margin-top:6px;">Reference: <a href="https://docs.jfrog.com/installation/docs/external-rabbitmq" target="_blank">JFrog — Configuring an External RabbitMQ</a>.</div>
+      <div class="hint" style="margin-top:6px;">Reference: <a href="https://docs.jfrog.com/installation/docs/xray-and-rabbitmq-nodes-recommendations_xray-system-requirements-and-platform-support" target="_blank">JFrog — Configuring an External RabbitMQ</a>.</div>
     </details>
   `;
   }
@@ -2914,7 +2914,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
     password: "&lt;password&gt;"</blockquote>
         </li>
       </ul>
-      <div class="hint">Reference: <a href="https://docs.jfrog.com/jfrog-curation-documentation/jfrog-curation" target="_blank">JFrog Curation</a> &middot; <a href="https://valkey.io/topics/" target="_blank">Valkey operations</a>.</div>
+      <div class="hint">Reference: <a href="https://docs.jfrog.com/installation/docs/installing-catalog" target="_blank">JFrog Curation</a> &middot; <a href="https://valkey.io/topics/" target="_blank">Valkey operations</a>.</div>
     </details>
   `;
   }
@@ -2987,7 +2987,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
       <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/" target="_blank">reference architecture pages</a>. Replicas by tier — Artifactory 1/2/3/4/6, Nginx and Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3, JAS 1/1/1/1/1.</p>
       <p><strong>Storage sizing</strong> (disk, IOPS, throughput) is from the <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/storage/" target="_blank">JFrog storage specification page</a>: Artifactory 500→1000 GB, Xray 100→200 GB, RabbitMQ 100 GB, JAS 300 GB; Artifactory DB = 1/3 of filestore at 4K–20K IOPS; Xray DB 500–2500 GB at 4K–12K IOPS.</p>
       <p><strong>Co-location</strong>: Distribution is co-located onto Artifactory nodes (no extra VMs, +200 GB to Artifactory disk). Artifactory, Nginx, Xray, JAS each require a dedicated VM per replica. RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts.</p>
-      <p><strong>Optional services</strong> (Workers, AppTrust + UnifiedPolicy) come from the <a href="https://docs.jfrog.com/installation/docs/hardware-sizing-matrix" target="_blank">JFrog hardware sizing matrix</a> — Workers 4/4/50, AppTrust &amp; UnifiedPolicy each 2/1/50. <strong>Mission Control</strong> is bundled into Artifactory (a platform service on the router) — it adds no standalone node or database; selecting it only enables the UI integration (<code>artifactory.mc.enabled</code>). <strong>Runtime Security</strong> installs as separate releases (<code>jfrog/runtime</code> + <code>jfrog/runtime-sensors</code>): a Runtime server (its own <code>runtime</code> DB) plus a per-node sensor DaemonSet that adds no dedicated nodes. <strong>Workers</strong> and <strong>Runtime</strong> are not part of the <code>jfrog-platform</code> umbrella chart.</p>
+      <p><strong>Optional services</strong> (Workers, AppTrust + UnifiedPolicy) come from the <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/hardware-sizing-matrix" target="_blank">JFrog hardware sizing matrix</a> — Workers 4/4/50, AppTrust &amp; UnifiedPolicy each 2/1/50. <strong>Mission Control</strong> is bundled into Artifactory (a platform service on the router) — it adds no standalone node or database; selecting it only enables the UI integration (<code>artifactory.mc.enabled</code>). <strong>Runtime Security</strong> installs as separate releases (<code>jfrog/runtime</code> + <code>jfrog/runtime-sensors</code>): a Runtime server (its own <code>runtime</code> DB) plus a per-node sensor DaemonSet that adds no dedicated nodes. <strong>Workers</strong> and <strong>Runtime</strong> are not part of the <code>jfrog-platform</code> umbrella chart.</p>
       <p><strong>Onprem</strong>: JFrog does not publish a dedicated onprem sizing table, so this calculator mirrors the cloud CPU/RAM as generic VM sizes.</p>
       <p><strong>VM vs Kubernetes</strong>: capacity numbers are identical — they describe the worker-node footprint either way. On Kubernetes, per-pod <code>requests</code>/<code>limits</code> come from the JFrog Helm chart sizing presets and are typically smaller than the full VM allocation.</p>
     </details>
