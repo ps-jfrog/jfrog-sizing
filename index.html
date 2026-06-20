@@ -171,7 +171,7 @@
         <label><input type="checkbox" id="svcCuration" /> Curation + Catalog</label>
         <label><input type="checkbox" id="svcRuntime" /> Runtime Security</label>
       </div>
-      <div class="hint">Distribution co-locates on Artifactory (+200 GB, no new VMs). Mission Control is bundled into Artifactory (no separate node or DB). JAS, Workers and AppTrust + UnifiedPolicy add their own nodes per the hardware sizing matrix. JAS requires Xray. Curation adds the Catalog service (+ its own DB and a Valkey cache). Runtime Security adds a Runtime server (+ its own DB) and a per-node sensor DaemonSet — both as separate Helm releases.</div>
+      <div class="hint">Distribution co-locates on Artifactory (+200 GB, no new VMs). Mission Control is bundled into Artifactory (no separate node or DB). JAS requires Xray; on VMs it adds dedicated servers, on Kubernetes it runs within the Xray Helm chart (no extra nodes). Workers and AppTrust + UnifiedPolicy add their own nodes per the hardware sizing matrix. Curation adds the Catalog service (+ its own DB and a Valkey cache). Runtime Security adds a Runtime server (+ its own DB) and a per-node sensor DaemonSet — both as separate Helm releases.</div>
     </div>
 
     <div class="field" id="valkeyField" style="display:none;">

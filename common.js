@@ -281,7 +281,7 @@ const COLOCATION_RULES = [
   { rule:"Each Artifactory replica should run in its own instance (prefer a dedicated node pool)", relation:"dedicated", components:["Artifactory"] },
   { rule:"Each Nginx replica should run in its own instance (prefer a dedicated node pool)",       relation:"dedicated", components:["Nginx"] },
   { rule:"Each Xray replica should run in its own instance (prefer a dedicated node pool)",        relation:"dedicated", components:["Xray"] },
-  { rule:"If running JAS, it's recommended to use a dedicated node pool for it to protect Xray and Artifactory pods", relation:"dedicated", components:["JAS"] },
+  { rule:"If running JAS on VMs, dedicated servers are required for JAS (separate from Xray). On Kubernetes, JAS runs within the Xray chart — no separate node pool needed", relation:"dedicated", components:["JAS"] },
   { rule:"For Xray HA / more than 100K indexed artifacts, RabbitMQ and Xray must run on separate servers (split mode)", relation:"dedicated", components:["RabbitMQ", "Xray"] },
   { rule:"RabbitMQ must be deployed in odd-numbered clusters (1, 3, 5, ...) so quorum queues can elect a majority", relation:"odd-quorum", components:["RabbitMQ"] }
 ];
@@ -593,7 +593,7 @@ function binarystoreLines(r, indent) {
 
 function buildHelmValues(r) {
   const arti    = findComp(r, "Artifactory");
-  const xray    = findComp(r, "Xray");
+  const xray    = findComp(r, "Xray") || findComp(r, "Xray + JAS");
   const nginx   = findComp(r, "Nginx (reverse proxy / TLS)");
   const catalog = findComp(r, "Catalog");
   const artiDb  = findComp(r, "PostgreSQL (Artifactory DB)");
@@ -1558,7 +1558,7 @@ function buildHelmValues(r) {
 function buildAnsibleInventory(r) {
   const arti    = findComp(r, "Artifactory");
   const nginx   = findComp(r, "Nginx (reverse proxy / TLS)");
-  const xray    = findComp(r, "Xray");
+  const xray    = findComp(r, "Xray") || findComp(r, "Xray + JAS");
   const rmq     = findComp(r, "RabbitMQ (Xray)");
   const catalog = findComp(r, "Catalog");
   const L = [];
@@ -1939,9 +1939,32 @@ function calculate() {
   /* --- Xray + RabbitMQ (Xray DB is sized in the consolidated database block below) --- */
   let externalRmqSpec = null;
   if (xrayEnabled) {
-    components.push(buildRow("xray", "Xray", {
-      note: "Dedicated VM per replica. Index time scales with artifact count."
-    }));
+    // On K8s, JAS is a feature flag inside Xray (extraSystemYaml.jas.enabled: true) — no separate
+    // JAS node pool. Add JAS resource overhead directly to each Xray replica.
+    let xrayName = "Xray";
+    let xrayExtraCpu = 0, xrayExtraMemGB = 0, xrayExtraDiskGB = 0;
+    let xrayNote = "Dedicated VM per replica. Index time scales with artifact count.";
+    if (svc.jas && deployment === "k8s") {
+      const jasCpu    = xrayArtifacts <= 100000 ? 6 : 8;
+      const jasMemGB  = 24;
+      const jasDiskGB = xrayArtifacts <= 100000 ? 500 : 300;
+      xrayExtraCpu    = jasCpu;
+      xrayExtraMemGB  = jasMemGB;
+      xrayExtraDiskGB = jasDiskGB;
+      xrayName = "Xray + JAS";
+      xrayNote = `JAS runs inside the Xray pod (extraSystemYaml.jas.enabled: true) — no separate JAS node pool on K8s. JAS overhead per replica: +${jasCpu} vCPU / +${jasMemGB} GB RAM / +${jasDiskGB} GB disk.`;
+    }
+    const xrayBaseArch = arch.xray[tier];
+    const xrayBaseStor = STORAGE.xray[tier];
+    const xrayRow = buildRow("xray", xrayName, {
+      storage: { gb: xrayBaseStor.gb + xrayExtraDiskGB, iops: xrayBaseStor.iops, mbps: xrayBaseStor.mbps },
+      note: xrayNote
+    });
+    if (xrayExtraCpu > 0) {
+      xrayRow.cpu   = xrayBaseArch.cpu   + xrayExtraCpu;
+      xrayRow.memGB = xrayBaseArch.memGB + xrayExtraMemGB;
+    }
+    components.push(xrayRow);
     // RabbitMQ must be deployed in odd-numbered clusters (quorum queues need majority consensus).
     // Single node (1) is acceptable for non-HA small deployments; any cluster ≥ 2 must be rounded up to the next odd number.
     const oddify = n => (n <= 1 ? n : (n % 2 === 0 ? n + 1 : n));
@@ -1969,12 +1992,37 @@ function calculate() {
   }
 
   /* --- JAS (Advanced Security) --- */
+  // VMs: JAS requires dedicated separate servers (JFrog JAS prerequisites table).
+  // K8s: JAS runs within the Xray Helm chart via xray.jas.enabled — no separate node pool.
   if (svc.jas && xrayEnabled) {
-    components.push(buildRow("jas", "JAS (Xray Advanced Security)", {
-      note: "Dedicated node pool required (JFrog rule — protects Xray + Artifactory)."
-    }));
+    let jasNodes, jasCpu, jasMemGB, jasDiskGB;
+    if (xrayArtifacts <= 100000) {
+      jasNodes = 1; jasCpu = 6; jasMemGB = 24; jasDiskGB = 500;
+    } else if (xrayArtifacts <= 1000000) {
+      jasNodes = 2; jasCpu = 8; jasMemGB = 24; jasDiskGB = 300;
+    } else if (xrayArtifacts <= 2000000) {
+      jasNodes = 4; jasCpu = 8; jasMemGB = 24; jasDiskGB = 300;
+    } else {
+      jasNodes = 8; jasCpu = 8; jasMemGB = 24; jasDiskGB = 300;
+    }
+    if (deployment === "vm") {
+      // On VMs, JAS needs its own dedicated server(s) separate from Xray.
+      components.push({
+        name: "JAS (Advanced Security)",
+        replicas: jasNodes,
+        instance: arch.jas[tier].instance,
+        cpu: jasCpu,
+        memGB: jasMemGB,
+        diskGB: jasDiskGB,
+        iops: 3000,
+        mbps: 500,
+        note: `JFrog JAS prerequisites: ${jasNodes} dedicated server${jasNodes > 1 ? "s" : ""} for ${xrayArtifacts.toLocaleString()} indexed artifacts (${jasCpu} vCPU / ${jasMemGB} GB RAM / ${jasDiskGB} GB SSD @ 3K IOPS). JAS modules run alongside Xray but on dedicated hosts.`
+      });
+    }
+    // K8s: no separate component — JAS is enabled inside the Xray chart (xray.jas.enabled: true).
+    // Ephemeral scan jobs run on the Xray node pool (or a tainted sub-pool via xray.jas.executionService).
   } else if (svc.jas && !xrayEnabled) {
-    // JAS is part of Xray — silently ignore if Xray disabled (warning shown elsewhere).
+    // JAS requires Xray — silently ignore if Xray disabled (warning shown elsewhere).
   }
 
   /* --- Optional services from hardware sizing matrix --- */
@@ -2732,7 +2780,13 @@ function render(r) {
       applied.push("RabbitMQ running single-node (no quorum) — acceptable only for non-HA Small deployments.");
     }
   }
-  if (r.svc.jas && r.xrayEnabled) applied.push("JAS deployed on its own dedicated VM (Xray protection rule).");
+  if (r.svc.jas && r.xrayEnabled) {
+    if (r.deployment === "vm") {
+      applied.push("JAS deployed on dedicated server(s) separate from Xray (JFrog JAS prerequisites requirement).");
+    } else {
+      applied.push("JAS enabled via xray.jas.enabled in the Xray Helm chart — runs within the Xray release, no separate node pool required on Kubernetes.");
+    }
+  }
   if (r.svc.missionControl) applied.push("Mission Control bundled into Artifactory (platform service on the router) — no standalone node or database.");
   if (r.svc.curation) {
     applied.push(`Curation is a runtime feature of Artifactory + Xray — no dedicated nodes. Only new infrastructure: Catalog service nodes (with a catalogdb database) and Valkey (${r.externalValkey ? "external — provisioned separately, see below" : "co-located on the Catalog nodes, +8 GB RAM, no new VMs"}).`);
@@ -2774,7 +2828,7 @@ function render(r) {
       <summary style="font-size:14px;">Storage &amp; network — ${r.cloudLabel}</summary>
       <table style="margin-top:10px;">
         <tbody>
-          <tr><td><strong>Service disks (block)</strong></td><td>${sc.block} — sized per-tier (Artifactory 500/1000 GB, Xray 100/200 GB, RabbitMQ 100 GB, JAS 300 GB)</td></tr>
+          <tr><td><strong>Service disks (block)</strong></td><td>${sc.block} — sized per-tier (Artifactory 500/1000 GB, Xray 100/200 GB, RabbitMQ 100 GB, JAS 500 GB for ≤100K artifacts / 300 GB per node otherwise)</td></tr>
           <tr><td><strong>Database disks</strong></td><td>${sc.premium} — Artifactory DB ≈ 1/3 of filestore; Xray DB 500–2500 GB per tier; IOPS 4K–20K</td></tr>
           <tr><td><strong>Binary / artifact backend</strong></td><td><strong>${bs.best.name}</strong> <span class="chip ok">JFrog recommended</span> — sized at <strong>${r.binaryTB} TB</strong>${isMulti ? " per site" : ""}. <span class="hint">binarystore.xml: <code>${bs.best.template}</code>. ${bs.best.note}</span><div class="hint" style="margin-top:4px;">Other options: ${bs.alternatives.map(a => `${a.name} (<code>${a.template}</code>)`).join(" · ")}.</div></td></tr>
           ${r.cacheFsGB > 0 ? `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>${sc.block} — <strong>${fmtGB(r.cacheFsGB)}</strong> local SSD per Artifactory replica (${r.cacheFsPct}% of filestore); fronts ${sc.object} so hot artifacts are served at local-disk latency</td></tr>` : `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>Disabled — every binary read hits ${sc.object} directly. Enable for better performance with object storage.</td></tr>`}
@@ -2973,7 +3027,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
       <ul style="margin:10px 0 4px; padding-left:20px; font-size:13px; line-height:1.8;">
         <li>Replica counts above are for HA mode. Single-replica mode always uses 1 node per component regardless of tier.</li>
         <li>RabbitMQ is only deployed when Xray is enabled and runs on dedicated nodes for HA or &gt;100K indexed artifacts.</li>
-        <li>JAS uses 1 node at every tier (always on its own dedicated node, separate from Xray).</li>
+        <li>JAS (<strong>VMs</strong>): dedicated servers scaled by artifact volume — 1 node (≤100K), 2 nodes (≤1M), 4 nodes (≤2M), 8 nodes (≤10M). <strong>Kubernetes</strong>: JAS runs within the Xray Helm chart (xray.jas.enabled) — no separate node pool.</li>
         <li>Distribution co-locates onto Artifactory nodes (+200 GB disk, no additional VMs/pods).</li>
       </ul>
     </details>
@@ -2984,9 +3038,9 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
     <details>
       <summary>How these numbers are derived</summary>
       <p><strong>Effective tier</strong> = max of two inputs: concurrent connections tier (reference architecture: ≤100 Small, ≤500 Medium, ≤1,200 Large, ≤3,000 XLarge, ≤6,000 2XLarge) and RPM tier (≤6K Small, ≤50K Medium, ≤100K Large, ≤200K XLarge, ≤500K 2XLarge).</p>
-      <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/" target="_blank">reference architecture pages</a>. Replicas by tier — Artifactory 1/2/3/4/6, Nginx and Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3, JAS 1/1/1/1/1.</p>
+      <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/" target="_blank">reference architecture pages</a>. Replicas by tier — Artifactory 1/2/3/4/6, Nginx and Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3. <strong>JAS</strong> deployment differs by model: on <em>VMs</em>, JAS requires dedicated servers scaled by artifact volume — 1 node (≤100K, 6 vCPU/24 GB/500 GB), 2 nodes (≤1M, 8 vCPU/24 GB/300 GB), 4 nodes (≤2M), 8 nodes (≤10M) per the <a href="https://docs.jfrog.com/installation/docs/jfrog-advanced-security-prerequisites" target="_blank">JAS prerequisites table</a>. On <em>Kubernetes</em>, JAS runs within the Xray Helm chart (xray.jas.enabled: true) — no separate node pool; ephemeral scan jobs run on the Xray pool or a tainted sub-pool.</p>
       <p><strong>Storage sizing</strong> (disk, IOPS, throughput) is from the <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/storage/" target="_blank">JFrog storage specification page</a>: Artifactory 500→1000 GB, Xray 100→200 GB, RabbitMQ 100 GB, JAS 300 GB; Artifactory DB = 1/3 of filestore at 4K–20K IOPS; Xray DB 500–2500 GB at 4K–12K IOPS.</p>
-      <p><strong>Co-location</strong>: Distribution is co-located onto Artifactory nodes (no extra VMs, +200 GB to Artifactory disk). Artifactory, Nginx, Xray, JAS each require a dedicated VM per replica. RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts.</p>
+      <p><strong>Co-location</strong>: Distribution is co-located onto Artifactory nodes (no extra VMs, +200 GB to Artifactory disk). Artifactory, Nginx, and Xray each require a dedicated VM per replica. On VMs, JAS also requires dedicated servers (separate from Xray). RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts. On Kubernetes, JAS runs within the Xray chart (no extra nodes).</p>
       <p><strong>Optional services</strong> (Workers, AppTrust + UnifiedPolicy) come from the <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/hardware-sizing-matrix" target="_blank">JFrog hardware sizing matrix</a> — Workers 4/4/50, AppTrust &amp; UnifiedPolicy each 2/1/50. <strong>Mission Control</strong> is bundled into Artifactory (a platform service on the router) — it adds no standalone node or database; selecting it only enables the UI integration (<code>artifactory.mc.enabled</code>). <strong>Runtime Security</strong> installs as separate releases (<code>jfrog/runtime</code> + <code>jfrog/runtime-sensors</code>): a Runtime server (its own <code>runtime</code> DB) plus a per-node sensor DaemonSet that adds no dedicated nodes. <strong>Workers</strong> and <strong>Runtime</strong> are not part of the <code>jfrog-platform</code> umbrella chart.</p>
       <p><strong>Onprem</strong>: JFrog does not publish a dedicated onprem sizing table, so this calculator mirrors the cloud CPU/RAM as generic VM sizes.</p>
       <p><strong>VM vs Kubernetes</strong>: capacity numbers are identical — they describe the worker-node footprint either way. On Kubernetes, per-pod <code>requests</code>/<code>limits</code> come from the JFrog Helm chart sizing presets and are typically smaller than the full VM allocation.</p>
