@@ -134,21 +134,21 @@
     </div>
 
     <div class="field">
-      <label>Ingress</label>
-      <div class="radio-group" data-name="ingress">
-        <label><input type="radio" name="ingress" value="nginx" checked /> JFrog NGINX</label>
-        <label><input type="radio" name="ingress" value="lb" /> Load Balancer</label>
+      <label>Load balancer</label>
+      <div class="radio-group" data-name="lb">
+        <label><input type="radio" name="lb" value="none" checked /> None</label>
+        <label><input type="radio" name="lb" value="external" /> External LB</label>
       </div>
-      <div class="hint">JFrog NGINX is the bundled reverse proxy (TLS, routing, large-upload buffering). Choose Load Balancer to front the platform with a cloud-native LB (ALB/NLB, App Gateway, GCLB) or an external/hardware LB (F5, HAProxy, etc.).</div>
+      <div class="hint">Cloud-native (ALB/NLB, App Gateway, GCLB) or hardware/external LB (F5, HAProxy, etc.). When absent, NGINX handles TLS termination and routing directly.</div>
     </div>
 
-    <div class="field" id="lbTargetField" style="display:none;">
-      <label>Load balancer routes to</label>
-      <div class="radio-group" data-name="lbTarget">
-        <label><input type="radio" name="lbTarget" value="artifactory" checked /> Artifactory (no NGINX)</label>
-        <label><input type="radio" name="lbTarget" value="nginx" /> NGINX (keep behind LB)</label>
+    <div class="field">
+      <label>NGINX reverse proxy</label>
+      <div class="radio-group" data-name="nginx_rp">
+        <label><input type="radio" name="nginx_rp" value="provision" checked /> Provision NGINX</label>
+        <label><input type="radio" name="nginx_rp" value="skip" id="nginxSkipRadio" disabled /> Skip NGINX</label>
       </div>
-      <div class="hint">Route to Artifactory: the LB terminates TLS and hits Artifactory's built-in router — no NGINX VMs provisioned. Route to NGINX: keep the NGINX tier behind the LB for advanced rewrite/proxy features.</div>
+      <div class="hint">JFrog NGINX handles TLS termination, routing, and large-upload buffering. Required when no external LB is present. Can be omitted when an LB routes directly to Artifactory's built-in router.</div>
     </div>
 
     <div class="field" id="rmqField">

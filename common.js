@@ -389,8 +389,7 @@ function buildSizingCsv(r) {
   row("Indexed artifacts (Xray)", r.xrayEnabled ? `${r.xrayArtifactsInput} → ${r.xrayArtifacts} (projected)` : "No Xray");
   row("Local cache-fs", r.cacheFsGB > 0 ? `${r.cacheFsPct}% of binaries (${fmtGB(r.cacheFsGB)}/node)` : "Disabled");
   row("High Availability", r.ha ? "Yes (multi-replica)" : "No (single replica)");
-  row("Ingress", r.externalLB ? `Load Balancer — ${r.lbDisplay}` : "JFrog NGINX (bundled)");
-  if (r.externalLB) row("LB routes to", r.provisionNginx ? "NGINX (kept behind LB)" : "Artifactory (no NGINX tier)");
+  row("Load balancer", r.externalLB ? r.lbDisplay : "None");
   row("NGINX tier provisioned", r.provisionNginx ? "Yes" : "No");
   row("RabbitMQ", !r.xrayEnabled ? "N/A (no Xray)" : (r.externalRMQ ? "External" : "Bundled"));
   row("Database", r.dbMode === "external" ? "External (managed/standalone RDBMS)" : "Co-located (provisioned with the deployment)");
@@ -1568,125 +1567,177 @@ function buildAnsibleInventory(r) {
     for (let i = 1; i <= n; i++) L.push(name + "-" + i + " ansible_host=<ip-" + i + ">");
     L.push("");
   };
-  group("artifactory", arti, arti ? arti.replicas : 1);
-  if (r.provisionNginx && nginx) group("nginx", nginx, nginx.replicas);
-  if (r.xrayEnabled && xray)     group("xray", xray, xray.replicas);
-  if (r.xrayEnabled && !r.externalRMQ && rmq) group("rabbitmq", rmq, rmq.replicas);
+  group("artifactory_servers", arti, arti ? arti.replicas : 1);
+  if (r.provisionNginx && nginx) group("nginx_servers", nginx, nginx.replicas);
+  if (r.xrayEnabled && xray)     group("xray_servers", xray, xray.replicas);
+  if (r.xrayEnabled && !r.externalRMQ && rmq) group("rabbitmq_servers", rmq, rmq.replicas);
   if (r.svc.curation && catalog) {
-    group("catalog", catalog, catalog.replicas);
-    // Valkey co-located on Catalog nodes — no separate group needed unless external
+    group("catalog_servers", catalog, catalog.replicas);
     if (r.externalValkey) {
       const catReplicas = r.ha ? 3 : 1;
-      L.push("[valkey]   # " + catReplicas + " node(s) — external Valkey (separate from Catalog)");
+      L.push("[valkey_servers]   # " + catReplicas + " node(s) — external Valkey (separate from Catalog)");
       for (let i = 1; i <= catReplicas; i++) L.push("valkey-" + i + " ansible_host=<ip-" + i + ">");
       L.push("");
     }
   }
-  if (r.svc.runtime) group("runtime", findComp(r, "Runtime (server)"), r.ha ? 2 : 1);
-  if (r.dbMode === "colocated") group("postgresql", null, r.ha ? 2 : 1);
+  if (r.svc.runtime) group("runtime_servers", findComp(r, "Runtime (server)"), r.ha ? 2 : 1);
+  if (r.dbMode === "colocated") group("postgres_servers", null, r.ha ? 2 : 1);
   L.push("[jpd:children]");
-  L.push("artifactory");
-  if (r.provisionNginx) L.push("nginx");
-  if (r.xrayEnabled) L.push("xray");
-  if (r.svc.curation) L.push("catalog");
-  if (r.svc.runtime) L.push("runtime");
+  L.push("artifactory_servers");
+  if (r.provisionNginx) L.push("nginx_servers");
+  if (r.xrayEnabled) L.push("xray_servers");
+  if (r.svc.curation) L.push("catalog_servers");
+  if (r.svc.runtime) L.push("runtime_servers");
   return L.join("\n");
 }
 
-function buildSystemYamlTemplate(r) {
+function buildAnsibleVarsFile(r) {
   const L = [];
-  L.push("# system.yaml.j2 — rendered onto each node by the playbook.");
-  L.push("configVersion: 1");
-  L.push("shared:");
-  L.push('  jfrogUrl: "https://<jpd-url>"');
-  L.push("  security:");
-  L.push('    masterKey: "{{ jpd_master_key }}"');
-  L.push('    joinKey: "{{ jpd_join_key }}"');
-  if (r.ha) {
-    L.push("  node:");
-    L.push("    id: \"{{ inventory_hostname }}\"");
-    L.push("    primary: \"{{ 'true' if inventory_hostname == groups['artifactory'][0] else 'false' }}\"");
-    L.push("    haEnabled: true");
+  const dbHost = r.dbMode === "colocated"
+    ? "{{ hostvars[groups['postgres_servers'][0]]['ansible_host'] }}"
+    : "<db-host>";
+  L.push("# group_vars/all/vars.yml — jfrog.platform collection variables.");
+  L.push("# Use Ansible Vault for secrets: ansible-vault encrypt_string 'value' --name 'master_key'");
+  L.push("");
+  L.push('master_key: "{{ vault_master_key }}"     # openssl rand -hex 32');
+  L.push('join_key:   "{{ vault_join_key }}"        # openssl rand -hex 32');
+  L.push('jfrog_url: "https://<jpd-fqdn>"');
+  L.push("");
+  L.push("artifactory_enabled: true");
+  L.push('artifactory_version: "7.x.x"             # pin to your target release');
+  L.push("artifactory_ha_enabled: " + r.ha);
+  L.push("artifactory_db_type: postgresql");
+  L.push("artifactory_db_driver: org.postgresql.Driver");
+  L.push("artifactory_db_name: artifactory");
+  L.push("artifactory_db_user: artifactory");
+  L.push('artifactory_db_password: "{{ vault_artifactory_db_password }}"');
+  L.push('artifactory_db_url: "jdbc:postgresql://' + dbHost + ':5432/{{ artifactory_db_name }}"');
+  if (r.xrayEnabled) {
+    L.push("");
+    L.push("xray_enabled: true");
+    L.push('xray_version: "3.x.x"                  # pin to your target release');
+    L.push("xray_db_type: postgresql");
+    L.push("xray_db_driver: org.postgresql.Driver");
+    L.push("xray_db_name: xray");
+    L.push("xray_db_user: xray");
+    L.push('xray_db_password: "{{ vault_xray_db_password }}"');
+    L.push('xray_db_url: "postgres://' + dbHost + ':5432/{{ xray_db_name }}?sslmode=disable"');
+    if (!r.externalRMQ) {
+      L.push('xray_rabbitmq_url: "amqp://{{ hostvars[groups[\'rabbitmq_servers\'][0]][\'ansible_host\'] }}:5672/"');
+    } else {
+      L.push('xray_rabbitmq_url: "amqp://<rmq-host>:5672/"');
+    }
   }
-  L.push("  database:");
-  L.push("    type: postgresql");
-  L.push("    driver: org.postgresql.Driver");
-  L.push('    url: "jdbc:postgresql://{{ db_host }}:5432/artifactory"');
-  L.push('    username: artifactory');
-  L.push('    password: "{{ artifactory_db_password }}"');
-  if (r.xrayEnabled && r.externalRMQ) {
-    L.push("  rabbitMq:");
-    L.push("    active: false   # external RabbitMQ");
-    L.push('    url: "amqp://{{ rmq_host }}:5672"');
+  if (r.svc.distribution) {
+    L.push("");
+    L.push("distribution_enabled: true");
+    L.push('distribution_version: "2.x.x"');
+    L.push("distribution_db_type: postgresql");
+    L.push("distribution_db_driver: org.postgresql.Driver");
+    L.push("distribution_db_name: distribution");
+    L.push("distribution_db_user: distribution");
+    L.push('distribution_db_password: "{{ vault_distribution_db_password }}"');
+    L.push('distribution_db_url: "jdbc:postgresql://' + dbHost + ':5432/{{ distribution_db_name }}?sslmode=disable"');
   }
+  if (r.dbMode === "colocated") {
+    L.push("");
+    L.push("postgres_enabled: true");
+    L.push("database:");
+    L.push("  artifactory:");
+    L.push("    name: artifactory");
+    L.push("    owner: artifactory");
+    L.push("    username: artifactory");
+    L.push('    password: "{{ vault_artifactory_db_password }}"');
+    L.push("    enabled: true");
+    if (r.xrayEnabled) {
+      L.push("  xray:");
+      L.push("    name: xray");
+      L.push("    owner: xray");
+      L.push("    username: xray");
+      L.push('    password: "{{ vault_xray_db_password }}"');
+      L.push("    enabled: true");
+    }
+    if (r.svc.distribution) {
+      L.push("  distribution:");
+      L.push("    name: distribution");
+      L.push("    owner: distribution");
+      L.push("    username: distribution");
+      L.push('    password: "{{ vault_distribution_db_password }}"');
+      L.push("    enabled: true");
+    }
+  }
+  L.push("");
+  L.push("ansible_python_interpreter: /usr/bin/python3");
   return L.join("\n");
 }
 
 function buildAnsiblePlaybook(r) {
   const L = [];
-  L.push("# site.yml — install JFrog Artifactory" + (r.xrayEnabled ? " + Xray" : "") + " on VMs.");
-  L.push("# Follows the JFrog manual install (Linux archive + system.yaml). Adapt versions/paths.");
-  L.push("- name: Install JFrog Artifactory");
-  L.push("  hosts: artifactory");
+  L.push("# site.yml — install JFrog Platform using the jfrog.platform Ansible collection.");
+  L.push("# Install deps first:");
+  L.push("#   ansible-galaxy collection install jfrog.platform community.general community.postgresql");
+  L.push("# Secrets go in group_vars/all/vars.yml (encrypt with Ansible Vault).");
+  if (r.dbMode === "colocated") {
+    L.push("");
+    L.push("- name: Install PostgreSQL");
+    L.push("  hosts: postgres_servers");
+    L.push("  become: true");
+    L.push("  collections: [community.postgresql, community.general]");
+    L.push("  roles:");
+    L.push("    - role: jfrog.platform.postgres");
+    L.push("      when: postgres_enabled | bool");
+  }
+  L.push("");
+  L.push("- name: Install Artifactory");
+  L.push("  hosts: artifactory_servers");
   L.push("  become: true");
-  L.push("  vars:");
-  L.push('    artifactory_version: "7.x.x"          # pin to your target release');
-  L.push('    install_root: /opt/jfrog/artifactory');
-  L.push('    db_host: "<db-host>"');
-  L.push('    # secrets: pass via --extra-vars or Ansible Vault');
-  L.push("  tasks:");
-  L.push("    - name: Create install directory");
-  L.push("      ansible.builtin.file: { path: '{{ install_root }}', state: directory }");
-  L.push("    - name: Download & unpack Artifactory Pro (bundled JRE)");
-  L.push("      ansible.builtin.unarchive:");
-  L.push('        src: "https://releases.jfrog.io/artifactory/artifactory-pro/org/artifactory/pro/jfrog-artifactory-pro/{{ artifactory_version }}/jfrog-artifactory-pro-{{ artifactory_version }}-linux.tar.gz"');
-  L.push("        dest: '{{ install_root }}'");
-  L.push("        remote_src: true");
-  L.push("        extra_opts: [--strip-components=1]");
-  L.push("    - name: Render system.yaml (external DB" + (r.ha ? ", HA node config" : "") + ")");
-  L.push("      ansible.builtin.template:");
-  L.push("        src: templates/system.yaml.j2");
-  L.push("        dest: '{{ install_root }}/var/etc/system.yaml'");
-  L.push("    - name: Install & start the service");
-  L.push("      ansible.builtin.shell: |");
-  L.push("        {{ install_root }}/app/bin/installService.sh");
-  L.push("        systemctl enable --now artifactory");
+  L.push("  serial:");
+  L.push("    - 1");
+  L.push("    - 100%");
+  L.push("  collections: [community.general]");
+  L.push("  roles:");
+  L.push("    - role: jfrog.platform.artifactory");
   if (r.provisionNginx) {
     L.push("");
-    L.push("- name: Install Nginx reverse proxy");
-    L.push("  hosts: nginx");
+    L.push("- name: Install NGINX reverse proxy");
+    L.push("  hosts: nginx_servers");
     L.push("  become: true");
-    L.push("  tasks:");
-    L.push("    - name: Install nginx + JFrog reverse-proxy config");
-    L.push("      ansible.builtin.debug: { msg: 'Install nginx and drop in the Artifactory reverse-proxy conf (Artifactory UI generates it).' }");
+    L.push("  collections: [community.general]");
+    L.push("  roles:");
+    L.push("    - role: jfrog.platform.artifactory_nginx");
   }
   if (r.xrayEnabled) {
     L.push("");
-    L.push("- name: Install JFrog Xray");
-    L.push("  hosts: xray");
+    L.push("- name: Install Xray");
+    L.push("  hosts: xray_servers");
     L.push("  become: true");
-    L.push("  vars: { xray_version: \"3.x.x\", db_host: \"<db-host>\" }");
-    L.push("  tasks:");
-    L.push("    - name: Download & unpack Xray, render its system.yaml, install service");
-    L.push("      ansible.builtin.debug: { msg: 'Mirror the Artifactory tasks using the Xray archive; point system.yaml at xraydb" + (r.externalRMQ ? " and the external RabbitMQ" : "") + ".' }");
+    L.push("  collections: [community.general]");
+    L.push("  roles:");
+    L.push("    - role: jfrog.platform.xray");
+    L.push("      when: xray_enabled | bool");
+  }
+  if (r.svc.distribution) {
+    L.push("");
+    L.push("- name: Install Distribution");
+    L.push("  hosts: distribution_servers");
+    L.push("  become: true");
+    L.push("  collections: [community.general]");
+    L.push("  roles:");
+    L.push("    - role: jfrog.platform.distribution");
+    L.push("      when: distribution_enabled | bool");
   }
   if (r.svc.curation) {
     L.push("");
-    L.push("# Curation is a runtime feature of Artifactory + Xray — no dedicated nodes.");
-    L.push("# Enable it by adding the flags below to system.yaml on Artifactory + Xray nodes:");
-    L.push("#   artifactory.curation.enabled: true  (under the 'artifactory:' key)");
-    L.push("#   curation.enabled: true               (under the 'xray:' key, if running Xray)");
-    L.push("# The Catalog service (below) and Valkey are the only new infrastructure.");
-    L.push("");
+    L.push("# Curation: no dedicated role in jfrog.platform yet.");
+    L.push("# Enable via Artifactory system.yaml: artifactory.curation.enabled: true");
+    L.push("# Install Catalog and Valkey manually using the archive + installService.sh pattern.");
     L.push("- name: Install JFrog Catalog");
-    L.push("  hosts: catalog");
+    L.push("  hosts: catalog_servers");
     L.push("  become: true");
     L.push("  vars:");
-    L.push('    catalog_version: "3.x.x"          # pin to your target release');
+    L.push('    catalog_version: "3.x.x"');
     L.push('    install_root: /opt/jfrog/catalog');
-    L.push('    db_host: "<db-host>"');
-    L.push('    valkey_host: "' + (r.externalValkey ? "<valkey-host>" : "{{ groups['catalog'][0] }}") + '"');
-    L.push('    # secrets: pass via --extra-vars or Ansible Vault');
+    L.push('    valkey_host: "' + (r.externalValkey ? "<valkey-host>" : "{{ groups['catalog_servers'][0] }}") + '"');
     L.push("  tasks:");
     L.push("    - name: Download & unpack Catalog");
     L.push("      ansible.builtin.unarchive:");
@@ -1694,34 +1745,33 @@ function buildAnsiblePlaybook(r) {
     L.push("        dest: '{{ install_root }}'");
     L.push("        remote_src: true");
     L.push("        extra_opts: [--strip-components=1]");
-    L.push("    - name: Render system.yaml (DB + Valkey + platform URL)");
+    L.push("    - name: Render system.yaml");
     L.push("      ansible.builtin.template:");
     L.push("        src: templates/catalog-system.yaml.j2");
     L.push("        dest: '{{ install_root }}/var/etc/system.yaml'");
-    L.push("      vars:");
-    L.push("        catalog_db_url: 'jdbc:postgresql://{{ db_host }}:5432/catalogdb'");
-    L.push("        valkey_url: 'redis://{{ valkey_host }}:6379'");
-    L.push("    - name: Install & start the Catalog service");
+    L.push("    - name: Install & start Catalog service");
     L.push("      ansible.builtin.shell: |");
     L.push("        {{ install_root }}/app/bin/installService.sh");
     L.push("        systemctl enable --now catalog");
   }
   if (r.svc.runtime) {
     L.push("");
+    L.push("# Runtime Security: no dedicated role in jfrog.platform yet.");
+    L.push("# Install jfrog-runtime and jfrog-runtime-sensors using the archive pattern.");
     L.push("- name: Install JFrog Runtime (server)");
-    L.push("  hosts: runtime");
+    L.push("  hosts: runtime_servers");
     L.push("  become: true");
-    L.push("  vars: { runtime_version: \"1.x.x\", db_host: \"<db-host>\" }");
+    L.push("  vars: { runtime_version: \"1.x.x\" }");
     L.push("  tasks:");
-    L.push("    - name: Install the Runtime server, point it at the 'runtime' database and the platform jfrogUrl (:8082)");
-    L.push("      ansible.builtin.debug: { msg: 'Install jfrog-runtime; system.yaml database url = postgres://<db-host>:5432/runtime.' }");
+    L.push("    - name: Install jfrog-runtime; system.yaml db url = postgres://<db-host>:5432/runtime");
+    L.push("      ansible.builtin.debug: { msg: 'Download archive, render system.yaml, run installService.sh' }");
     L.push("");
-    L.push("- name: Install Runtime sensors (per-node agent — DaemonSet equivalent)");
+    L.push("- name: Install Runtime sensors (per-node agent)");
     L.push("  hosts: all");
     L.push("  become: true");
     L.push("  tasks:");
-    L.push("    - name: Deploy the runtime sensor on every node, registered to the Runtime server");
-    L.push("      ansible.builtin.debug: { msg: 'Install jfrog-runtime-sensors on each VM, pointing at the Runtime server :8082.' }");
+    L.push("    - name: Deploy runtime sensor on every node, registered to Runtime server :8082");
+    L.push("      ansible.builtin.debug: { msg: 'Download jfrog-runtime-sensors archive, configure, run installService.sh' }");
   }
   return L.join("\n");
 }
@@ -1754,19 +1804,19 @@ function buildArtifactPanel(r) {
   }
   const inv = buildAnsibleInventory(r);
   const play = buildAnsiblePlaybook(r);
-  const sys = buildSystemYamlTemplate(r);
+  const vars = buildAnsibleVarsFile(r);
   return `
     <details class="panel">
       <summary style="font-size:14px;">Deployment artifacts — Virtual Machines (Ansible)</summary>
-      <p style="margin:10px 0 4px; font-size:13px; color:var(--muted);">JFrog has no single official Ansible collection; this follows the manual install (Linux archive + <code>system.yaml</code>). Adapt versions and secrets, then run <code>ansible-playbook -i inventory.ini site.yml</code>.</p>
+      <p style="margin:10px 0 4px; font-size:13px; color:var(--muted);">Uses the official <a href="https://galaxy.ansible.com/ui/repo/published/jfrog/platform/" target="_blank">jfrog.platform</a> Ansible collection. Install deps: <code>ansible-galaxy collection install jfrog.platform community.general community.postgresql</code>. Set secrets in <code>group_vars/all/vars.yml</code> (Ansible Vault recommended), then run <code>ansible-playbook -i inventory.ini site.yml</code>.</p>
       <p style="margin:12px 0 4px; font-size:13px; color:var(--muted);"><strong>inventory.ini</strong> (hosts grouped by role, counts from the sizing):</p>
       <blockquote style="white-space:pre; font-family:monospace; font-style:normal; max-height:200px; overflow:auto;">${escapeHtml(inv)}</blockquote>
       <p style="margin:12px 0 4px; font-size:13px; color:var(--muted);"><strong>site.yml</strong>:</p>
       <blockquote style="white-space:pre; font-family:monospace; font-style:normal; max-height:300px; overflow:auto;">${escapeHtml(play)}</blockquote>
-      <p style="margin:12px 0 4px; font-size:13px; color:var(--muted);"><strong>templates/system.yaml.j2</strong>:</p>
-      <blockquote style="white-space:pre; font-family:monospace; font-style:normal; max-height:240px; overflow:auto;">${escapeHtml(sys)}</blockquote>
+      <p style="margin:12px 0 4px; font-size:13px; color:var(--muted);"><strong>group_vars/all/vars.yml</strong>:</p>
+      <blockquote style="white-space:pre; font-family:monospace; font-style:normal; max-height:240px; overflow:auto;">${escapeHtml(vars)}</blockquote>
       <button class="export" id="artifactBtn">⤓ Download Ansible bundle</button>
-      <div class="hint" style="margin-top:8px;">Reference: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/installing-artifactory" target="_blank">Installing Artifactory</a> &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/system-yaml-configuration-file" target="_blank">system.yaml</a>.</div>
+      <div class="hint" style="margin-top:8px;">Reference: <a href="https://galaxy.ansible.com/ui/repo/published/jfrog/platform/" target="_blank">jfrog.platform collection</a> &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/installing-artifactory" target="_blank">Installing Artifactory</a>.</div>
     </details>`;
 }
 
@@ -1778,7 +1828,7 @@ function downloadArtifact(r) {
     const bundle =
       "# ===== inventory.ini =====\n" + buildAnsibleInventory(r) +
       "\n\n# ===== site.yml =====\n" + buildAnsiblePlaybook(r) +
-      "\n\n# ===== templates/system.yaml.j2 =====\n" + buildSystemYamlTemplate(r);
+      "\n\n# ===== group_vars/all/vars.yml =====\n" + buildAnsibleVarsFile(r);
     downloadText("jpd-ansible-bundle.txt", bundle, "text/plain");
   }
 }
@@ -1797,8 +1847,12 @@ function toggleConditionalFields() {
   const topology   = document.querySelector('input[name="topology"]:checked').value;
   document.getElementById("k8sPlacementField").style.display = deployment === "k8s" ? "" : "none";
   document.getElementById("passiveScaleField").style.display = topology === "active-passive" ? "" : "none";
-  const usingLB = document.querySelector('input[name="ingress"]:checked').value === "lb";
-  document.getElementById("lbTargetField").style.display = usingLB ? "" : "none";
+  const usingLB = document.querySelector('input[name="lb"]:checked').value === "external";
+  const nginxSkip = document.getElementById("nginxSkipRadio");
+  if (nginxSkip) {
+    nginxSkip.disabled = !usingLB;
+    if (!usingLB) document.querySelector('input[name="nginx_rp"][value="provision"]').checked = true;
+  }
   document.getElementById("valkeyField").style.display = document.getElementById("svcCuration").checked ? "" : "none";
   // RabbitMQ is always Helm-deployed on K8s — hide the external toggle for K8s deployments.
   const rmqField = document.getElementById("rmqField");
@@ -1859,12 +1913,12 @@ function calculate() {
   const cacheFsPct = Math.max(0, parseFloat(document.getElementById("cacheFsPct").value) || 0);
   const cacheFsGB  = cacheFs ? Math.round(binaryTB * 1024 * cacheFsPct / 100) : 0;
 
-  // Ingress: NGINX (bundled reverse proxy) or a Load Balancer. When an LB is used,
-  // it either routes straight to Artifactory (no NGINX tier) or to NGINX behind it.
-  const ingress    = document.querySelector('input[name="ingress"]:checked').value; // nginx | lb
-  const lbTarget   = document.querySelector('input[name="lbTarget"]:checked').value; // artifactory | nginx
-  const externalLB = ingress === "lb";
-  const provisionNginx = !externalLB || lbTarget === "nginx";
+  // Load balancer and NGINX are independent: an external LB is optional, and NGINX
+  // can be provisioned with or without one. NGINX is required when there is no LB.
+  const lb         = document.querySelector('input[name="lb"]:checked').value; // none | external
+  const nginxRp    = document.querySelector('input[name="nginx_rp"]:checked').value; // provision | skip
+  const externalLB = lb === "external";
+  const provisionNginx = nginxRp === "provision";
 
   // RabbitMQ (Xray messaging). External removes the RMQ nodes from this footprint;
   // the recommended external spec + plugin/config requirements are surfaced separately.
