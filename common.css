@@ -34,8 +34,19 @@
     border-bottom: 1px solid var(--border);
     background: linear-gradient(180deg, #11151c 0%, #0f1115 100%);
   }
+  .header-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   header h1 { margin: 0; font-size: 22px; font-weight: 600; }
   header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  #data-freshness {
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  #data-freshness:empty { display: none; }
   .layout {
     display: grid;
     grid-template-columns: 420px 1fr;

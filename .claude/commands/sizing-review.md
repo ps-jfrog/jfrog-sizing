@@ -4,8 +4,9 @@ Review the jpd-sizing calculator for correctness based on feedback or a diff, th
 
 ## Codebase map
 
-- **`index.html`** — form fields only. Each `<input name="X">` maps to a `document.querySelector('input[name="X"]:checked')` read in `common.js`. SheetJS is loaded from CDN (`xlsx@0.18.5`) for XLSX export. Every field label ends with a `<span class="tip-icon" data-tip="...">i</span>` — the tooltip text lives in the `data-tip` attribute; there are no `<div class="hint">` elements. The CSP meta tag (`script-src 'self' https://cdn.jsdelivr.net; connect-src 'none'; ...`) and SRI hash on the SheetJS `<script>` tag are security-critical — do not remove them.
+- **`index.html`** — form fields only. Each `<input name="X">` maps to a `document.querySelector('input[name="X"]:checked')` read in `common.js`. SheetJS is loaded from CDN (`xlsx@0.18.5`) for XLSX export. Every field label ends with a `<span class="tip-icon" data-tip="...">i</span>` — the tooltip text lives in the `data-tip` attribute; there are no `<div class="hint">` elements. The CSP meta tag (`script-src 'self' https://cdn.jsdelivr.net; connect-src 'self'; ...`) allows same-origin fetches for `sizing-data.json` while blocking external connections. The SRI hash on the SheetJS `<script>` tag is security-critical — do not remove or change either. The header contains a `<span id="data-freshness"></span>` badge that shows the date of the last scrape.
 - **`common.js`** — everything else: `calculate()`, rendering, artifact generators.
+  - `REF_ARCH`, `STORAGE`, `REPLICAS` are declared as `let` with hardcoded fallback values (for `file://` usage). On page load, a `fetch('./sizing-data.json')` overwrites them with live data then calls `calculate()`. On fetch failure the fallback values are used silently. The badge `#data-freshness` is populated from `data.dataDate` (top-level field in `sizing-data.json`).
   - `toggleConditionalFields()` — shows/hides conditional inputs; must stay in sync with the fields in `index.html`.
   - `calculate()` — reads all form inputs, builds `components[]`, computes `r` (the result object), calls `render(r)`.
   - `buildRow(key, displayName, opts)` — looks up instance/cpu/memGB from `REF_ARCH[cloud][key][tier]`; returns a plain object that can have `.cpu` / `.memGB` mutated after the call for co-located overhead.
@@ -16,12 +17,17 @@ Review the jpd-sizing calculator for correctness based on feedback or a diff, th
   - `buildArtifactPanel(r)` — assembles the Deployment artifacts UI panel.
   - `buildPortsPanel(r)`, `buildNetworkPanel(r)`, etc. — other result panels.
   - `initTooltips()` IIFE at the bottom — creates a single `#tooltip-bubble` div, wires `mouseenter`/`mousemove`/`mouseleave` on every `.tip-icon`, and positions the bubble to follow the cursor (flips left when near the right viewport edge). Uses `textContent` (not `innerHTML`) — tooltip text must be plain text only.
+- **`sizing-data.json`** — authoritative sizing data extracted from JFrog docs. Top-level fields: `dataDate` (ISO date of last scrape), `REF_ARCH` (4 clouds × 7 roles × 5 tiers = 140 entries), `STORAGE` (disk GB / IOPS / throughput per role per tier; `artifactoryDb` uses `frac: 0.3333...` instead of `gb`), `REPLICAS` (HA replica counts). RabbitMQ disk is 250 GB (from the dedicated RabbitMQ sizing page, not the general storage page). Do not add `_meta.generated` — the badge reads `dataDate`.
+- **`scripts/scrape-sizing.js`** — Node.js scraper (requires cheerio). Fetches 5 JFrog docs pages in parallel, parses HTML tables, validates all 140 REF_ARCH entries, diffs against the current `sizing-data.json`, and writes if changed. Always stamps `dataDate` on every run (so the badge stays current). Exits 0 = no data change, 1 = data changed (CI opens a PR), 2 = parse/validation error. Supports `--dry-run`.
+- **`scripts/package.json`** — single dependency: `cheerio ^1.0.0`, Node >= 18.
+- **`.github/workflows/sync-sizing-data.yml`** — weekly Monday 07:00 UTC cron + manual dispatch (with `dry_run` boolean). Runs the scraper and opens a PR via `peter-evans/create-pull-request@v6` when exit code is 1. Fails the job on exit code 2.
 
 ## Key data structures
 
-- **`REF_ARCH[cloud][key][tier]`** — per-cloud instance types and CPU/RAM for each service role (artifactory, nginx, xray, rabbitmq, jas, artifactoryDb, xrayDb). No entry for distribution (it's a co-located add-on).
-- **`STORAGE[key][tier]`** — disk GB / IOPS / throughput per service role.
-- **`REPLICAS[key][tier]`** — HA replica counts by tier.
+- **`REF_ARCH[cloud][key][tier]`** — per-cloud instance types and CPU/RAM for each service role (artifactory, nginx, xray, rabbitmq, jas, artifactoryDb, xrayDb). No entry for distribution (it's a co-located add-on). Source of truth is `sizing-data.json`; hardcoded values in `common.js` are a fallback only.
+- **`STORAGE[key][tier]`** — disk GB / IOPS / throughput per service role. `artifactoryDb` uses `frac` (fraction of Artifactory filestore) rather than a fixed `gb`. Source of truth is `sizing-data.json`.
+- **`REPLICAS[key][tier]`** — HA replica counts by tier. Identical across clouds. JAS is always 1 (not published in docs). Source of truth is `sizing-data.json`.
+- **`dataDate`** — ISO date string (`"YYYY-MM-DD"`) in `sizing-data.json`. Stamped on every scraper run. Displayed as a badge in the UI header via `#data-freshness`. Read in `common.js` as `data.dataDate` (not `data._meta?.generated`).
 - **`COLOCATION_RULES[]`** — verbatim JFrog reference architecture quotes, rendered in the UI.
 - **`components[]`** — assembled inside `calculate()`, consumed by `buildSizingXlsx`, `k8sPlan`, VM totals, and all rendering functions. Each entry: `{ name, replicas, instance, cpu, memGB, diskGB, iops, mbps, note }`.
 
@@ -102,6 +108,19 @@ When a form field is renamed or split, grep for all of the following and update 
 
 ### 6. Tooltip text
 `data-tip` values are plain text — no `<`, `>`, or HTML tags. If an explanation requires markup, rephrase it. The `initTooltips()` IIFE at the bottom of `common.js` renders via `textContent`; changing it to `innerHTML` would be an XSS risk (even though values are authored, keep the constraint to avoid future accidents).
+
+### 7. Sizing data updates (`sizing-data.json`)
+When JFrog docs change instance sizes, disk, or replica counts, update `sizing-data.json` directly **or** let the weekly scraper do it automatically:
+
+- **Manual edit**: update `sizing-data.json` and bump `dataDate` to today's date.
+- **Scraper**: run `node scripts/scrape-sizing.js` from the repo root. It writes `sizing-data.json` if data changed and always stamps `dataDate`. Use `--dry-run` to preview diffs without writing.
+- **CI**: the `sync-sizing-data.yml` workflow runs Monday 07:00 UTC and opens a PR automatically when the scraper detects changes. Review the PR diff before merging.
+
+Key invariants to preserve in `sizing-data.json`:
+- All 140 REF_ARCH entries must be present (4 clouds × 7 roles × 5 tiers). The scraper validates this and exits 2 if any are missing or zero.
+- RabbitMQ disk must be 250 GB (from the dedicated RabbitMQ page, not the general storage page — the general page shows 100 GB which is outdated).
+- `artifactoryDb` STORAGE must use `frac: 0.3333333333333333` (1/3 of Artifactory filestore), not a fixed `gb`.
+- `dataDate` is a top-level field, not nested under `_meta`. The badge in `common.js` reads `data.dataDate`.
 
 ## jf-k8s repo sync
 

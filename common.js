@@ -3244,6 +3244,8 @@ fetch('./sizing-data.json')
     if (data.REF_ARCH) REF_ARCH = data.REF_ARCH;
     if (data.STORAGE)  STORAGE  = data.STORAGE;
     if (data.REPLICAS) REPLICAS = data.REPLICAS;
+    const badge = document.getElementById('data-freshness');
+    if (badge && data.dataDate) badge.textContent = `Sizing data: ${data.dataDate}`;
     calculate();
   })
   .catch(() => calculate()); // Fallback: hardcoded constants are already set.
