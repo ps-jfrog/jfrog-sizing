@@ -3,9 +3,12 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none';" />
 <title>JFrog Platform Site Sizing Calculator</title>
 <link rel="stylesheet" href="common.css" />
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"
+        integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw"
+        crossorigin="anonymous"></script>
 </head>
 <body>
 
@@ -26,106 +29,97 @@
     <h2>Inputs</h2>
 
     <div class="field">
-      <label>Target environment</label>
+      <label>Target environment <span class="tip-icon" data-tip="Selects the per-cloud instance catalog, managed-DB SKUs, storage classes and network guidance. Private DC mirrors the cloud CPU/RAM as generic VMs.">i</span></label>
       <div class="radio-group quad" data-name="cloud">
         <label><input type="radio" name="cloud" value="aws" checked /> AWS</label>
         <label><input type="radio" name="cloud" value="azure" /> Azure</label>
         <label><input type="radio" name="cloud" value="gcp" /> GCP</label>
         <label><input type="radio" name="cloud" value="onprem" /> Private DC</label>
       </div>
-      <div class="hint">Selects the per-cloud instance catalog, managed-DB SKUs, storage classes and network guidance. Private DC mirrors the cloud CPU/RAM as generic VMs.</div>
     </div>
 
     <div class="field">
-      <label>Deployment model</label>
+      <label>Deployment model <span class="tip-icon" data-tip="Kubernetes shows worker-node recommendations and a per-site cluster plan. Servers sizes one host per replica and generates an Ansible bundle.">i</span></label>
       <div class="radio-group" data-name="deployment">
         <label><input type="radio" name="deployment" value="k8s" checked /> Kubernetes</label>
         <label><input type="radio" name="deployment" value="vm" /> Servers (VMs / bare metal)</label>
       </div>
-      <div class="hint">Kubernetes shows worker-node recommendations and a per-site cluster plan. Servers sizes one host per replica and generates an Ansible bundle.</div>
     </div>
 
     <div class="field" id="infraTypeField">
-      <label>Server type</label>
+      <label>Server type <span class="tip-icon" data-tip="Bare metal uses physical CPU cores (not vCPU) — sizing figures are identical, the label changes from vCPU to cores in the output.">i</span></label>
       <div class="radio-group" data-name="infra_type">
         <label><input type="radio" name="infra_type" value="vm" checked /> Virtual machine</label>
         <label><input type="radio" name="infra_type" value="baremetal" /> Bare metal</label>
       </div>
-      <div class="hint">Bare metal uses physical CPU cores (not vCPU) — sizing figures are identical, the label changes from vCPU to cores in the output.</div>
     </div>
 
     <div class="field" id="k8sPlacementField" style="display:none;">
-      <label>Kubernetes placement (HA strategy)</label>
+      <label>Kubernetes placement (HA strategy) <span class="tip-icon" data-tip="Dedicated: one pod per node (mirrors VM model). Anti-affinity: pods can share a pool with other workloads, but podAntiAffinity keeps Artifactory replicas off the same node.">i</span></label>
       <div class="radio-group" data-name="k8sPlacement">
         <label><input type="radio" name="k8sPlacement" value="dedicated" checked /> Dedicated node pool</label>
         <label><input type="radio" name="k8sPlacement" value="antiaffinity" /> Anti-affinity (shared pool)</label>
       </div>
-      <div class="hint">Dedicated: one pod per node (mirrors VM model). Anti-affinity: pods can share a pool with other workloads, but <code>podAntiAffinity</code> keeps Artifactory replicas off the same node.</div>
     </div>
 
     <div class="field">
-      <label>Topology</label>
+      <label>Topology <span class="tip-icon" data-tip="Single sizes one active cluster. Active-Passive adds a DR site (scaled by the passive option below). Active-Active adds a second full active site (both serve traffic, bidirectional federation). Both multi-site options report per-site footprints + a grand total.">i</span></label>
       <div class="radio-group quad" data-name="topology">
         <label><input type="radio" name="topology" value="single" checked /> Single active cluster</label>
-        <label><input type="radio" name="topology" value="active-passive" /> Active + Passive (DR)</label>
-        <label><input type="radio" name="topology" value="active-active" /> Active + Active</label>
+        <label><input type="radio" name="topology" value="active-passive" /> Active-Passive</label>
+        <label><input type="radio" name="topology" value="active-active" /> Active-Active</label>
       </div>
-      <div class="hint">Single sizes one active cluster. Active + Passive adds a DR site (scaled by the passive option below). Active + Active adds a second full active site (both serve traffic, bidirectional federation). Both multi-site options report per-site footprints + a grand total.</div>
     </div>
 
     <div class="field" id="passiveScaleField" style="display:none;">
-      <label>Passive site scale</label>
+      <label>Passive site scale <span class="tip-icon" data-tip="Active-Standby: passive site mirrors the active site replica count for instant failover. Warm Standby: passive site runs 1 replica per component (RabbitMQ stays at 3 for quorum) — scale up on failover.">i</span></label>
       <div class="radio-group" data-name="passiveScale">
-        <label><input type="radio" name="passiveScale" value="hot" checked /> Hot (mirror)</label>
-        <label><input type="radio" name="passiveScale" value="warm" /> Warm (minimal)</label>
+        <label><input type="radio" name="passiveScale" value="hot" checked /> Active-Standby</label>
+        <label><input type="radio" name="passiveScale" value="warm" /> Warm Standby</label>
       </div>
-      <div class="hint">Hot: identical replica count for instant failover. Warm: 1 replica per component (RabbitMQ 3 for quorum) with full DB; scale up on failover.</div>
     </div>
 
     <div class="field">
-      <label>Peak Concurrent Connections (cluster-wide)</label>
-      <input type="number" id="activeClients" min="0" value="80" />
-      <div class="hint">Total number of active HTTP threads serving requests across the entire Artifactory cluster at any given moment. Reference architecture tiers: Small ≤100, Medium ≤500, Large ≤1,200, XLarge ≤3,000, 2XLarge ≤6,000.</div>
+      <label>Peak Concurrent Connections (cluster-wide) <span class="tip-icon" data-tip="Total active HTTP threads across the Artifactory cluster. Growth headroom is applied — selecting a tier sizes for projected peak, not today's load.">i</span></label>
+      <select id="activeClients">
+        <option value="100" selected>Up to 100 — Small</option>
+        <option value="500">Up to 500 — Medium</option>
+        <option value="1200">Up to 1,200 — Large</option>
+        <option value="3000">Up to 3,000 — XLarge</option>
+        <option value="6000">Up to 6,000 — 2XLarge</option>
+      </select>
     </div>
 
     <div class="field">
-      <label>Peak Requests Per Minute (RPM) — cluster-wide</label>
-      <input type="number" id="rpm" min="0" value="20000" />
-      <div class="hint">Total number of HTTP requests handled collectively by all nodes in the Artifactory cluster within a minute. Reference architecture tiers: Small ≤6K, Medium ≤50K, Large ≤100K, XLarge ≤200K, 2XLarge ≤500K.</div>
+      <label>Peak Requests Per Minute (RPM) — cluster-wide <span class="tip-icon" data-tip="Total HTTP requests across all Artifactory nodes per minute. Growth headroom is applied on top of the selected tier ceiling.">i</span></label>
+      <select id="rpm">
+        <option value="6000" selected>Up to 6,000 — Small</option>
+        <option value="50000">Up to 50,000 — Medium</option>
+        <option value="100000">Up to 100,000 — Large</option>
+        <option value="200000">Up to 200,000 — XLarge</option>
+        <option value="500000">Up to 500,000 — 2XLarge</option>
+      </select>
     </div>
 
     <div class="field">
-      <label>Storage required for binaries (TB)</label>
+      <label>Storage required for binaries (TB) <span class="tip-icon" data-tip="Total artifact / binary footprint. Object storage is recommended in cloud.">i</span></label>
       <input type="number" id="binaryStorageTB" min="0" step="0.5" value="5" />
-      <div class="hint">Total artifact / binary footprint. Object storage is recommended in cloud.</div>
     </div>
 
     <div class="field">
-      <label>Local cache-fs (object-storage acceleration)</label>
-      <div class="radio-group" data-name="cachefs">
-        <label><input type="radio" name="cachefs" value="yes" checked /> Enabled</label>
-        <label><input type="radio" name="cachefs" value="no" /> Disabled</label>
-      </div>
-      <div class="hint">A local SSD cache on each Artifactory node fronts the object store, serving hot binaries at local-disk latency. Recommended whenever binaries live in object storage.</div>
-      <div class="notice warn" id="cacheFsWarn" style="display:none; margin-top:6px;">Disabling cache-fs means every binary read goes directly to object storage. This significantly increases latency and egress cost for hot artifacts and is only suitable for on-prem or all-flash storage that is already local. Enable it unless you have a specific reason not to.</div>
-    </div>
-
-    <div class="field">
-      <label>Cache-fs size (% of binary storage)</label>
+      <label>Cache-fs size (% of binary storage) <span class="tip-icon" data-tip="Local SSD cache per Artifactory replica fronting the object store — serves hot binaries at local-disk latency. Set to 0 to disable. Default 20% of the binary footprint.">i</span></label>
       <input type="number" id="cacheFsPct" min="0" max="100" step="5" value="20" />
-      <div class="hint">Local SSD cache per Artifactory replica, sized to hold the hot working set. Default 20% of the binary footprint.</div>
     </div>
 
     <div class="field">
-      <label>Xray (security &amp; compliance scanning)</label>
+      <label>Xray (security &amp; compliance scanning) <span class="tip-icon" data-tip="Enables Xray, RabbitMQ, and JAS. When disabled, none of these are sized or deployed.">i</span></label>
       <div class="checkbox-group">
         <label><input type="checkbox" id="xrayEnabled" checked /> Enable Xray</label>
       </div>
-      <div class="hint">Enables Xray, RabbitMQ, and JAS. When disabled, none of these are sized or deployed.</div>
     </div>
 
     <div class="field" id="xrayArtifactsField">
-      <label>Estimated indexed artifacts</label>
+      <label>Estimated indexed artifacts <span class="tip-icon" data-tip="Drives Xray node size, RabbitMQ replica count and Xray DB sizing. Over 100K artifacts forces RabbitMQ split mode.">i</span></label>
       <select id="xrayArtifacts">
         <option value="100000" selected>Up to 100K</option>
         <option value="1000000">Up to 1M</option>
@@ -133,53 +127,47 @@
         <option value="10000000">Up to 10M</option>
         <option value="20000000">Over 10M (support)</option>
       </select>
-      <div class="hint">Drives Xray node size, RabbitMQ replica count and Xray DB sizing. Over 100K artifacts forces RabbitMQ split mode.</div>
     </div>
 
     <div class="field">
-      <label>Planned growth headroom (%)</label>
+      <label>Planned growth headroom (%) <span class="tip-icon" data-tip="Scales the load drivers above (clients, RPM, storage, indexed artifacts) to size for projected growth. Set to 0 to size for today only.">i</span></label>
       <input type="number" id="growthPct" min="0" step="5" value="25" />
-      <div class="hint">Scales the load drivers above (clients, RPM, storage, indexed artifacts) to size for projected growth. Set to 0 to size for today only.</div>
     </div>
 
     <div class="field">
-      <label>High Availability (HA)</label>
+      <label>High Availability (HA) <span class="tip-icon" data-tip="Multi-replica uses JFrog-published replica counts per tier (1/2/3/4/6 for Artifactory).">i</span></label>
       <div class="radio-group" data-name="ha">
         <label><input type="radio" name="ha" value="yes" checked /> Multi-replica</label>
         <label><input type="radio" name="ha" value="no" /> Single replica</label>
       </div>
-      <div class="hint">Multi-replica uses JFrog-published replica counts per tier (1/2/3/4/6 for Artifactory).</div>
     </div>
 
     <div class="field">
-      <label>Load balancer</label>
+      <label>Load balancer <span class="tip-icon" data-tip="Cloud-native (ALB/NLB, App Gateway, GCLB) or hardware/external LB (F5, HAProxy, etc.). When absent, NGINX handles TLS termination and routing directly.">i</span></label>
       <div class="radio-group" data-name="lb">
         <label><input type="radio" name="lb" value="none" checked /> None</label>
         <label><input type="radio" name="lb" value="external" /> External LB</label>
       </div>
-      <div class="hint">Cloud-native (ALB/NLB, App Gateway, GCLB) or hardware/external LB (F5, HAProxy, etc.). When absent, NGINX handles TLS termination and routing directly.</div>
     </div>
 
     <div class="field">
-      <label>NGINX reverse proxy</label>
+      <label>NGINX reverse proxy <span class="tip-icon" data-tip="JFrog NGINX handles TLS termination, routing, and large-upload buffering. Required when no external LB is present. Can be omitted when an LB routes directly to Artifactory's built-in router.">i</span></label>
       <div class="radio-group" data-name="nginx_rp">
         <label><input type="radio" name="nginx_rp" value="provision" checked /> Provision NGINX</label>
         <label><input type="radio" name="nginx_rp" value="skip" id="nginxSkipRadio" disabled /> Skip NGINX</label>
       </div>
-      <div class="hint">JFrog NGINX handles TLS termination, routing, and large-upload buffering. Required when no external LB is present. Can be omitted when an LB routes directly to Artifactory's built-in router.</div>
     </div>
 
     <div class="field" id="rmqField">
-      <label>RabbitMQ (Xray messaging)</label>
+      <label>RabbitMQ (Xray messaging) <span class="tip-icon" data-tip="RabbitMQ is only deployed when Xray is enabled. Choosing External removes the RMQ nodes from this footprint — you provision and operate it separately; the recommended size + required plugins/config are shown in the results.">i</span></label>
       <div class="radio-group" data-name="rmq">
         <label><input type="radio" name="rmq" value="bundled" checked /> Bundled with platform</label>
         <label><input type="radio" name="rmq" value="external" /> External RabbitMQ</label>
       </div>
-      <div class="hint">RabbitMQ is only deployed when Xray is enabled. Choosing External removes the RMQ nodes from this footprint — you provision and operate it separately; the recommended size + required plugins/config are shown in the results.</div>
     </div>
 
     <div class="field">
-      <label>Optional JFrog services</label>
+      <label>Optional JFrog services <span class="tip-icon" data-tip="Distribution co-locates on Artifactory (+200 GB, no new VMs). Mission Control is bundled into Artifactory (no separate node or DB). JAS requires Xray; on VMs it adds dedicated servers, on K8s it runs within the Xray pod. Workers add their own nodes per the hardware sizing matrix. AppTrust + UnifiedPolicy co-locate on Artifactory nodes (no dedicated VMs). Curation adds the Catalog service with its own DB and a Valkey cache. Runtime Security adds a Runtime server with its own DB and a per-node sensor DaemonSet.">i</span></label>
       <div class="checkbox-group">
         <label><input type="checkbox" id="svcDistribution" /> Distribution</label>
         <label><input type="checkbox" id="svcJAS" /> JAS (Advanced Security)</label>
@@ -189,34 +177,30 @@
         <label><input type="checkbox" id="svcCuration" /> Curation + Catalog</label>
         <label><input type="checkbox" id="svcRuntime" /> Runtime Security</label>
       </div>
-      <div class="hint">Distribution co-locates on Artifactory (+200 GB, no new VMs). Mission Control is bundled into Artifactory (no separate node or DB). JAS requires Xray; on VMs it adds dedicated servers, on Kubernetes it runs within the Xray Helm chart (no extra nodes). Workers add their own nodes per the hardware sizing matrix. AppTrust + UnifiedPolicy co-locate on Artifactory nodes (small overhead — no dedicated VMs or node pools). Curation adds the Catalog service (+ its own DB and a Valkey cache). Runtime Security adds a Runtime server (+ its own DB) and a per-node sensor DaemonSet — both as separate Helm releases.</div>
     </div>
 
     <div class="field" id="valkeyField" style="display:none;">
-      <label>Valkey (Curation / Catalog cache)</label>
+      <label>Valkey (Curation / Catalog cache) <span class="tip-icon" data-tip="Only applies when Curation is enabled. Co-located runs Valkey on the Catalog nodes (adds RAM, no new VMs); External uses a managed/standalone Valkey (or Redis) cluster — removed from the footprint, with a recommended size + config shown.">i</span></label>
       <div class="radio-group" data-name="valkey">
-        <label><input type="radio" name="valkey" value="colocated" checked /> Co-located</label>
-        <label><input type="radio" name="valkey" value="external" /> External</label>
+        <label><input type="radio" name="valkey" value="colocated" /> Co-located</label>
+        <label><input type="radio" name="valkey" value="external" checked /> External</label>
       </div>
-      <div class="hint">Only applies when Curation is enabled. Co-located runs Valkey on the Catalog nodes (adds RAM, no new VMs); External uses a managed/standalone Valkey (or Redis) cluster — removed from the footprint, with a recommended size + config shown.</div>
     </div>
 
     <div class="field">
-      <label>Database</label>
+      <label>Database <span class="tip-icon" data-tip="Co-located = a PostgreSQL provisioned with the deployment (the Helm chart's bundled DB on K8s, or DB nodes alongside the platform on VMs) — it counts toward the footprint. External = any managed/standalone RDBMS you run separately (RDS / Cloud SQL / Flexible Server / self-managed), sized here but outside the footprint.">i</span></label>
       <div class="radio-group" data-name="db">
-        <label><input type="radio" name="db" value="colocated" checked /> Co-located</label>
-        <label><input type="radio" name="db" value="external" /> External</label>
+        <label><input type="radio" name="db" value="colocated" /> Co-located</label>
+        <label><input type="radio" name="db" value="external" checked /> External</label>
       </div>
-      <div class="hint">Co-located = a PostgreSQL provisioned with the deployment (the Helm chart's bundled DB on K8s, or DB nodes alongside the platform on VMs) — it counts toward the footprint. External = any managed/standalone RDBMS you run separately (RDS / Cloud SQL / Flexible Server / self-managed), sized here but outside the footprint.</div>
     </div>
 
     <div class="field">
-      <label>Database instances</label>
+      <label>Database instances <span class="tip-icon" data-tip="Shared = one PostgreSQL instance hosting a logical database per product (the typical setup; the Helm chart's bundled DB works this way). Dedicated = a separate instance per product (more DB nodes). Each product always gets its own logical database either way.">i</span></label>
       <div class="radio-group" data-name="dbInstances">
-        <label><input type="radio" name="dbInstances" value="shared" checked /> Shared (one instance)</label>
-        <label><input type="radio" name="dbInstances" value="dedicated" /> Dedicated per product</label>
+        <label><input type="radio" name="dbInstances" value="shared" /> Shared (one instance)</label>
+        <label><input type="radio" name="dbInstances" value="dedicated" checked /> Dedicated per product</label>
       </div>
-      <div class="hint">Shared = one PostgreSQL instance hosting a logical database per product (the typical setup; the Helm chart's bundled DB works this way). Dedicated = a separate instance per product (more DB nodes). Each product always gets its own logical database either way.</div>
     </div>
 
     <button class="export" id="exportBtn">⤓ Export to XLSX</button>

@@ -4,7 +4,7 @@ Review the jpd-sizing calculator for correctness based on feedback or a diff, th
 
 ## Codebase map
 
-- **`index.html`** — form fields only. Each `<input name="X">` maps to a `document.querySelector('input[name="X"]:checked')` read in `common.js`. SheetJS is loaded from CDN (`xlsx@0.18.5`) for XLSX export.
+- **`index.html`** — form fields only. Each `<input name="X">` maps to a `document.querySelector('input[name="X"]:checked')` read in `common.js`. SheetJS is loaded from CDN (`xlsx@0.18.5`) for XLSX export. Every field label ends with a `<span class="tip-icon" data-tip="...">i</span>` — the tooltip text lives in the `data-tip` attribute; there are no `<div class="hint">` elements. The CSP meta tag (`script-src 'self' https://cdn.jsdelivr.net; connect-src 'none'; ...`) and SRI hash on the SheetJS `<script>` tag are security-critical — do not remove them.
 - **`common.js`** — everything else: `calculate()`, rendering, artifact generators.
   - `toggleConditionalFields()` — shows/hides conditional inputs; must stay in sync with the fields in `index.html`.
   - `calculate()` — reads all form inputs, builds `components[]`, computes `r` (the result object), calls `render(r)`.
@@ -15,6 +15,7 @@ Review the jpd-sizing calculator for correctness based on feedback or a diff, th
   - `buildAnsibleInventory(r)` / `buildAnsiblePlaybook(r)` / `buildAnsibleVarsFile(r)` — generates the VM Ansible bundle.
   - `buildArtifactPanel(r)` — assembles the Deployment artifacts UI panel.
   - `buildPortsPanel(r)`, `buildNetworkPanel(r)`, etc. — other result panels.
+  - `initTooltips()` IIFE at the bottom — creates a single `#tooltip-bubble` div, wires `mouseenter`/`mousemove`/`mouseleave` on every `.tip-icon`, and positions the bubble to follow the cursor (flips left when near the right viewport edge). Uses `textContent` (not `innerHTML`) — tooltip text must be plain text only.
 
 ## Key data structures
 
@@ -60,6 +61,12 @@ Each field should represent one orthogonal concept. Flags to watch:
 - Options only valid in combination with another field — enable/disable in `toggleConditionalFields()`.
 - The `lb` and `nginx_rp` fields are independent: `lb` (none / external) controls whether an external LB exists; `nginx_rp` (provision / skip) controls whether NGINX is deployed. Skipping NGINX is only possible when `lb === "external"` — enforce this in `toggleConditionalFields()`.
 
+**Adding or editing a field:**
+1. In `index.html`: add the field markup with a `<span class="tip-icon" data-tip="...">i</span>` on the label. No `<div class="hint">` — tooltip text only. Keep `data-tip` values as **plain text** (no HTML tags; `initTooltips` uses `textContent`).
+2. In `common.js`: wire the read in `calculate()` and, if conditional, in `toggleConditionalFields()`.
+3. Update the Inputs sheet in `buildSizingXlsx(r)`.
+4. Run the consistency grep (see §5 below).
+
 ### 2. Deployment artifact accuracy — Ansible (VM path)
 The Ansible bundle uses the **official `jfrog.platform` collection** (`ansible-galaxy collection install jfrog.platform community.general community.postgresql`).
 - Inventory group names: `artifactory_servers`, `xray_servers`, `nginx_servers`, `postgres_servers`, `rabbitmq_servers`, `catalog_servers`, `runtime_servers`.
@@ -92,6 +99,9 @@ When a form field is renamed or split, grep for all of the following and update 
 - `id="OLDField"` show/hide in `toggleConditionalFields()`
 - Inputs sheet row in `buildSizingXlsx(r)` (around the `inputs.push(...)` block)
 - Output HTML in `buildArtifactPanel`, `buildPortsPanel`, `buildNetworkPanel`, topology chip row
+
+### 6. Tooltip text
+`data-tip` values are plain text — no `<`, `>`, or HTML tags. If an explanation requires markup, rephrase it. The `initTooltips()` IIFE at the bottom of `common.js` renders via `textContent`; changing it to `innerHTML` would be an XSS risk (even though values are authored, keep the constraint to avoid future accidents).
 
 ## jf-k8s repo sync
 

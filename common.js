@@ -374,8 +374,8 @@ function buildSizingXlsx(r) {
   const inputs = [["Field", "Value"]];
   inputs.push(["Target environment", r.cloudLabel]);
   inputs.push(["Deployment model", deployLabel]);
-  if (r.topology) inputs.push(["Topology", isAA ? "Active + Active" : isAP ? "Active + Passive (DR)" : "Single active cluster"]);
-  if (isAP) inputs.push(["Passive site scale", r.passiveScale === "hot" ? "Hot (mirror)" : "Warm (minimal)"]);
+  if (r.topology) inputs.push(["Topology", isAA ? "Active-Active" : isAP ? "Active-Passive" : "Single active cluster"]);
+  if (isAP) inputs.push(["Passive site scale", r.passiveScale === "hot" ? "Active-Standby" : "Warm Standby"]);
   if (r.deployment === "k8s" && r.k8sPlacement) inputs.push(["Kubernetes placement", r.k8sPlacement === "antiaffinity" ? "Anti-affinity (shared pool)" : "Dedicated node pool"]);
   inputs.push(["Effective tier", String(r.tier || "").toUpperCase()]);
   inputs.push(["Peak concurrent connections (projected)", r.activeClients]);
@@ -1847,7 +1847,7 @@ function downloadArtifact(r) {
 /* =============================================================================
    Calculator application — calculate() + render() + UI wiring.
    Single source for the calculator page (index.html). Handles both single and
-   Active+Passive topologies, VM and Kubernetes. Runs the initial calculate() at
+   Active-Passive topologies, VM and Kubernetes. Runs the initial calculate() at
    load (this script is included at end of <body>, so the DOM is ready).
    ============================================================================= */
 
@@ -1871,12 +1871,7 @@ function toggleConditionalFields() {
   if (xrayEnabledCb) {
     document.getElementById("xrayArtifactsField").style.display = xrayEnabledCb.checked ? "" : "none";
   }
-  // Cache-fs warning when disabled.
-  const cacheFsWarn = document.getElementById("cacheFsWarn");
-  if (cacheFsWarn) {
-    cacheFsWarn.style.display =
-      document.querySelector('input[name="cachefs"]:checked')?.value === "no" ? "" : "none";
-  }
+  // Cache-fs: no toggle — always enabled when cacheFsPct > 0.
   // RabbitMQ is always Helm-deployed on K8s — hide the external toggle for K8s deployments.
   const rmqField = document.getElementById("rmqField");
   if (rmqField) {
@@ -1932,10 +1927,10 @@ function calculate() {
   const externalValkey = valkeyMode === "external";
 
   // Local cache-fs: an SSD cache per Artifactory replica that fronts the object
-  // store. Sized as a percentage of the (projected) binary footprint.
-  const cacheFs    = document.querySelector('input[name="cachefs"]:checked').value === "yes";
+  // store. Enabled when cacheFsPct > 0 (set to 0 to disable).
+  const cacheFs    = true; // kept for result-object compat; disable by setting cacheFsPct to 0
   const cacheFsPct = Math.max(0, parseFloat(document.getElementById("cacheFsPct").value) || 0);
-  const cacheFsGB  = cacheFs ? Math.round(binaryTB * 1024 * cacheFsPct / 100) : 0;
+  const cacheFsGB  = Math.round(binaryTB * 1024 * cacheFsPct / 100);
 
   // Load balancer and NGINX are independent: an external LB is optional, and NGINX
   // can be provisioned with or without one. NGINX is required when there is no LB.
@@ -2271,13 +2266,13 @@ function calculate() {
   }
   const activeTotals = totalsOf(components);
 
-  /* --- Build the second site for a multi-site topology (Active+Passive or Active+Active) --- */
+  /* --- Build the second site for a multi-site topology (Active-Passive or Active-Active) --- */
   let passiveComponents = null;   // "the second site" (passive in A/P, the other active site in A/A)
   let passiveTotals     = null;
   if (topology === "active-passive" || topology === "active-active") {
     const aa = topology === "active-active";
-    // Deep-copy components. Active+Active: a full active mirror (both sites serve traffic).
-    // Active+Passive: Hot = identical; Warm = 1 replica per component (RabbitMQ rounded to 3 for quorum), DB at full sizing.
+    // Deep-copy components. Active-Active: a full active mirror (both sites serve traffic).
+    // Active-Passive: Hot = identical; Warm = 1 replica per component (RabbitMQ rounded to 3 for quorum), DB at full sizing.
     passiveComponents = components.map(c => {
       const copy = { ...c };
       if (aa) {
@@ -2292,7 +2287,7 @@ function calculate() {
         }
         copy.note = `Warm standby — ${copy.note}`;
       } else {
-        copy.note = `Hot standby (mirror) — ${copy.note}`;
+        copy.note = `Active-Standby — ${copy.note}`;
       }
       return copy;
     });
@@ -2364,8 +2359,8 @@ function buildPortsPanel(r) {
     }
     notes.push("Internal JFrog microservices (Access, Metadata, Frontend, Observability, Event — typically <code>8040–8049</code>, <code>8070</code>, <code>8086</code>) bind to each node and need no cross-node rule; only Artifactory HA replicas open <code>8081/8082/8040</code> between themselves.");
     if (r.externalLB) notes.push(`The ${r.lbDisplay} health-checks and forwards to Artifactory on <code>8082</code> (or <code>8081</code>).`);
-    if (r.topology === "active-passive") notes.push("Active+Passive: also allow cross-site replication — the active Artifactory reaches the passive over <code>443/8082</code> (federation/replication), plus your chosen DB replication path.");
-    if (r.topology === "active-active") notes.push("Active+Active: allow <strong>bidirectional</strong> cross-site traffic between both sites' Artifactory over <code>443/8082</code> (Federated repositories + Access Federation), and front both sites with a global LB / GSLB.");
+    if (r.topology === "active-passive") notes.push("Active-Passive: also allow cross-site replication — the active Artifactory reaches the passive over <code>443/8082</code> (federation/replication), plus your chosen DB replication path.");
+    if (r.topology === "active-active") notes.push("Active-Active: allow <strong>bidirectional</strong> cross-site traffic between both sites' Artifactory over <code>443/8082</code> (Federated repositories + Access Federation), and front both sites with a global LB / GSLB.");
   } else {
     intro = "Inside the cluster, pod-to-pod service traffic is handled by the CNI — you only need explicit rules for external ingress and for egress to any external services. The intra-cluster ports are listed for writing NetworkPolicies.";
     row("443, 80", "TCP / HTTPS", "Clients &amp; CI → Ingress / LoadBalancer Service", "External entry (Ingress controller or cloud LB Service; TLS on 443).");
@@ -2381,8 +2376,8 @@ function buildPortsPanel(r) {
     if (r.svc.runtime) intra.push("Runtime <code>8082</code> (+ sensor DaemonSet on every node)");
     notes.push(`Intra-cluster (pod-to-pod, CNI-handled; allow these in NetworkPolicies if enforced): ${intra.join(" · ")}.`);
     notes.push("Standard cluster ports (kube-apiserver <code>6443</code>, kubelet <code>10250</code>, etcd <code>2379–2380</code>, NodePort <code>30000–32767</code>) are part of your Kubernetes setup, not JFrog-specific.");
-    if (r.topology === "active-passive") notes.push("Active+Passive: open cross-cluster ingress on <code>443</code> between sites for federation/replication.");
-    if (r.topology === "active-active") notes.push("Active+Active: open <strong>bidirectional</strong> cross-cluster ingress on <code>443</code> between both sites (federation), and use a global LB / GSLB across both clusters' ingresses.");
+    if (r.topology === "active-passive") notes.push("Active-Passive: open cross-cluster ingress on <code>443</code> between sites for federation/replication.");
+    if (r.topology === "active-active") notes.push("Active-Active: open <strong>bidirectional</strong> cross-cluster ingress on <code>443</code> between both sites (federation), and use a global LB / GSLB across both clusters' ingresses.");
   }
 
   return `
@@ -2419,8 +2414,8 @@ function licenseItems(r) {
   if (r.svc.missionControl) add("Mission Control — Topology / management plane", "Enterprise+", "Enterprise+ feature (bundled into Artifactory).");
   if (r.svc.curation)   add("Curation + Catalog", "Enterprise+", "Requires Enterprise+ (or a dedicated Curation entitlement).");
   if (r.svc.appTrust)   add("AppTrust + Unified Policy", "Enterprise+", "Release-lifecycle / evidence — Enterprise+ (newer products may need a specific entitlement).");
-  if (r.topology === "active-passive") add("Active + Passive DR — multi-site &amp; Federation", "Enterprise+", "Multi-site, Federated repositories and Access Federation are Enterprise+.");
-  if (r.topology === "active-active")  add("Active + Active — multi-site &amp; bidirectional Federation", "Enterprise+", "Two active sites, Federated repositories + Access Federation — Enterprise+.");
+  if (r.topology === "active-passive") add("Active-Passive — multi-site &amp; Federation", "Enterprise+", "Multi-site, Federated repositories and Access Federation are Enterprise+.");
+  if (r.topology === "active-active")  add("Active-Active — multi-site &amp; bidirectional Federation", "Enterprise+", "Two active sites, Federated repositories + Access Federation — Enterprise+.");
   return items;
 }
 function licenseEffectiveTier(r) {
@@ -2450,12 +2445,12 @@ function licenseCount(r) {
    (no dependencies, renders over file://). Reacts to cloud, deployment model,
    topology, HA, and the selected products. Schematic: Region → VPC/VNet →
    public/private subnets across AZs → component boxes → in-region managed
-   services, with a cross-region replication arrow for Active+Passive.
+   services, with a cross-region replication arrow for Active-Passive.
    ============================================================================= */
 const DIAGRAM_REGIONS = {
-  aws:    { vpc:"VPC", az:"Availability Zones", k8s:"EKS", db:"RDS for PostgreSQL", obj:"Amazon S3", active:"Region us-east-1", passive:"Region us-west-2", lb:"ALB / NLB" },
-  azure:  { vpc:"VNet", az:"Availability Zones", k8s:"AKS", db:"Azure DB for PostgreSQL", obj:"Azure Blob Storage", active:"Region East US", passive:"Region West US", lb:"Application Gateway" },
-  gcp:    { vpc:"VPC network", az:"zones", k8s:"GKE", db:"Cloud SQL", obj:"Cloud Storage", active:"Region us-central1", passive:"Region us-west1", lb:"Cloud Load Balancing" },
+  aws:    { vpc:"VPC", az:"Availability Zones", k8s:"EKS", db:"RDS for PostgreSQL", obj:"Amazon S3", active:"Primary Region", passive:"DR Region", lb:"ALB / NLB" },
+  azure:  { vpc:"VNet", az:"Availability Zones", k8s:"AKS", db:"Azure DB for PostgreSQL", obj:"Azure Blob Storage", active:"Primary Region", passive:"DR Region", lb:"Application Gateway" },
+  gcp:    { vpc:"VPC network", az:"zones", k8s:"GKE", db:"Cloud SQL", obj:"Cloud Storage", active:"Primary Region", passive:"DR Region", lb:"Cloud Load Balancing" },
   onprem: { vpc:"Network / VLAN", az:"racks", k8s:"Kubernetes", db:"PostgreSQL (self-run)", obj:"S3-compatible store", active:"Primary datacenter", passive:"DR datacenter", lb:"External / hardware LB" }
 };
 
@@ -2513,7 +2508,7 @@ function buildArchitectureDiagram(r) {
     y += 8;
     const vpcTop = y;
     y += 22;
-    c.push(T(innerX, y, `${REG.vpc} · 10.0.0.0/16`, { fill: C.muted, size: 11, weight: 600 })); y += 18;
+    c.push(T(innerX, y, REG.vpc, { fill: C.muted, size: 11, weight: 600 })); y += 18;
     c.push(T(innerX, y, "Public subnet", { fill: C.muted, size: 10 })); y += 14;
     const lbItems = [{ label: lbShort, sub: "443 / 80" }];
     if (r.cloud !== "onprem") lbItems.push({ label: "NAT gateway", sub: "egress" });
@@ -2537,11 +2532,11 @@ function buildArchitectureDiagram(r) {
   const arrowGap = 96;
   const r1 = regionSvg(pad, `${r.cloudLabel} · ${REG.active} (${isAA ? "Active A" : "Active"})`, r.components);
   const x2 = pad + regW + arrowGap;
-  const r2label = isAA ? "Active B" : `Passive · ${r.passiveScale === "hot" ? "Hot mirror" : "Warm"}`;
+  const r2label = isAA ? "Active B" : `Passive · ${r.passiveScale === "hot" ? "Active-Standby" : "Warm Standby"}`;
   const r2 = regionSvg(x2, `${r.cloudLabel} · ${REG.passive} (${r2label})`, r.passiveComponents || r.components);
   const H = Math.max(r1.h, r2.h) + pad, W = x2 + regW + pad;
   const midY = Math.round(H / 2), ax1 = pad + regW, ax2 = x2;
-  // Active+Active = bidirectional federation arrow; Active+Passive = one-way replication.
+  // Active-Active = bidirectional federation arrow; Active-Passive = one-way replication.
   const arrow = `<defs><marker id="jpd-ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="${C.accent}"/></marker><marker id="jpd-ah2" markerWidth="9" markerHeight="9" refX="2" refY="3" orient="auto"><path d="M7,0 L0,3 L7,6 Z" fill="${C.accent}"/></marker></defs>`
     + `<line x1="${ax1 + 6}" y1="${midY}" x2="${ax2 - 6}" y2="${midY}" stroke="${C.accent}" stroke-width="1.5" marker-end="url(#jpd-ah)"${isAA ? ` marker-start="url(#jpd-ah2)"` : ""}/>`
     + T((ax1 + ax2) / 2, midY - 8, "Federation /", { fill: C.muted, size: 10, anchor: "middle" })
@@ -2552,7 +2547,7 @@ function buildArchitectureDiagram(r) {
 function buildDiagramPanel(r) {
   return `
     <details class="panel" open>
-      <summary style="font-size:14px;">Deployment architecture — ${r.cloudLabel}${r.topology === "active-passive" ? " (Active + Passive)" : r.topology === "active-active" ? " (Active + Active)" : ""}</summary>
+      <summary style="font-size:14px;">Deployment architecture — ${r.cloudLabel}${r.topology === "active-passive" ? " (Active-Passive)" : r.topology === "active-active" ? " (Active-Active)" : ""}</summary>
       <p style="margin:10px 0 8px; font-size:13px; color:var(--muted);">Schematic of the ${r.deployment === "k8s" ? "Kubernetes" : "VM"} deployment for the selected products. Component boxes show <em>name ×replicas</em>; dashed boxes are managed / external services.</p>
       <div style="margin-top:8px;">${buildArchitectureDiagram(r)}</div>
       <button class="export" id="diagramBtn">⤓ Download diagram (.svg)</button>
@@ -2618,7 +2613,7 @@ function render(r) {
   const isAA        = r.topology === "active-active";
   const isMulti     = isAP || isAA;                           // two-site topology
   const siteALabel  = isAA ? "Site A (active)" : "Active site";
-  const siteBLabel  = isAA ? "Site B (active)" : `Passive site (${r.passiveScale === "hot" ? "Hot mirror" : "Warm minimal"})`;
+  const siteBLabel  = isAA ? "Site B (active)" : `Passive site (${r.passiveScale === "hot" ? "Active-Standby" : "Warm Standby"})`;
   const placement   = r.deployment === "k8s"
     ? (r.k8sPlacement === "antiaffinity" ? "K8s anti-affinity (shared pool)" : "K8s dedicated node pool")
     : "VM (one Artifactory per VM)";
@@ -2632,7 +2627,7 @@ function render(r) {
         <div class="stat"><div class="label">Environment</div><div class="value">${r.cloudLabel}</div></div>
         <div class="stat"><div class="label">Model</div><div class="value">${deployLabel}</div></div>
         <div class="stat"><div class="label">Tier</div><div class="value">${tierName}</div></div>
-        <div class="stat"><div class="label">Topology</div><div class="value">${isAA ? "Active+Active" : isAP ? "Active+Passive" : "Single"}</div></div>
+        <div class="stat"><div class="label">Topology</div><div class="value">${isAA ? "Active-Active" : isAP ? "Active-Passive" : "Single"}</div></div>
       </div>
       <div style="margin-top:14px;">
         <span class="chip">${r.activeClients.toLocaleString()} concurrent conns → ${TIER_LABEL[r.connsTier]}</span>
@@ -2650,17 +2645,14 @@ function render(r) {
         ${r.externalRMQ && r.xrayEnabled ? `<span class="chip warn">External RabbitMQ</span>` : ""}
         ${r.svc.curation ? `<span class="chip ok">Curation + Catalog</span>` : ""}
         ${r.svc.curation && r.externalValkey ? `<span class="chip warn">External Valkey</span>` : ""}
-        ${isAP ? `<span class="chip warn">Passive: ${r.passiveScale === "hot" ? "Hot mirror" : "Warm minimal"}</span>` : ""}
-        ${isAA ? `<span class="chip warn">Active+Active (2 sites)</span>` : ""}
+        ${isAP ? `<span class="chip warn">Passive: ${r.passiveScale === "hot" ? "Active-Standby" : "Warm Standby"}</span>` : ""}
+        ${isAA ? `<span class="chip warn">Active-Active (2 sites)</span>` : ""}
       </div>
       ${r.growthPct > 0 ? `
       <div class="notice info" style="margin-top:12px;">
         <strong>Sized for ${r.growthPct}% projected growth.</strong>
-        Today → projected:
-        ${r.activeClientsInput.toLocaleString()} → <strong>${r.activeClients.toLocaleString()}</strong> concurrent connections ·
-        ${r.rpmInput.toLocaleString()} → <strong>${r.rpm.toLocaleString()}</strong> RPM ·
-        ${r.binaryTBInput} → <strong>${r.binaryTB} TB</strong> binaries${r.xrayEnabled ? ` ·
-        ${r.xrayArtifactsInput.toLocaleString()} → <strong>${r.xrayArtifacts.toLocaleString()}</strong> indexed artifacts` : ""}.
+        Binary storage: ${r.binaryTBInput} TB → <strong>${r.binaryTB} TB</strong>.
+        Tier and replica counts reflect the projected load after growth is applied.
       </div>` : ""}
     </div>
   `;
@@ -2697,7 +2689,7 @@ function render(r) {
           <div class="stat"><div class="label">${nodeStatLabel}</div><div class="value">${t.nodes}</div></div>
           <div class="stat"><div class="label">${r.cpuLabel}</div><div class="value">${t.cpu}</div></div>
           <div class="stat"><div class="label">Memory</div><div class="value">${t.mem}<span class="unit">GB</span></div></div>
-          <div class="stat"><div class="label">Service disk</div><div class="value">${fmtGB(t.disk)}</div></div>
+          <div class="stat"><div class="label">Storage</div><div class="value">${fmtGB(t.disk)}</div></div>
         </div>
       </div>
     `;
@@ -2709,7 +2701,7 @@ function render(r) {
       mem:   r.activeTotals.mem   + r.passiveTotals.mem,
       disk:  r.activeTotals.disk  + r.passiveTotals.disk
     };
-    html += footprintCard(`Grand total (${isAA ? "Active + Active" : "Active + Passive"})`, gt);
+    html += footprintCard(`Grand total (${isAA ? "Active-Active" : "Active-Passive"})`, gt);
     html += `<div class="totals">
       ${footprintCard(siteALabel, r.activeTotals)}
       ${footprintCard(siteBLabel, r.passiveTotals)}
@@ -2759,8 +2751,8 @@ function render(r) {
         <div class="summary-grid">
           <div class="stat"><div class="label">Worker nodes</div><div class="value">${plan.workerNodes}</div></div>
           <div class="stat"><div class="label">Node pools</div><div class="value">${plan.pools.length}</div></div>
-          <div class="stat"><div class="label">Cluster ${r.cpuLabel}</div><div class="value">${plan.clusterCPU}<span class="unit">w/ sys</span></div></div>
-          <div class="stat"><div class="label">Cluster RAM</div><div class="value">${plan.clusterMem}<span class="unit">GB w/ sys</span></div></div>
+          <div class="stat"><div class="label">Cluster ${r.cpuLabel}</div><div class="value">${plan.clusterCPU}<span class="unit" title="Worker capacity + ~15% for kubelet, OS, CNI, system DaemonSets">incl. sys</span></div></div>
+          <div class="stat"><div class="label">Cluster RAM</div><div class="value">${plan.clusterMem}<span class="unit" title="Worker capacity + ~15% for kubelet, OS, CNI, system DaemonSets">GB incl. sys</span></div></div>
         </div>
         <table style="margin-top:12px;">
           <thead><tr><th>Node pool (VM size)</th><th>${r.cpuLabel}</th><th>RAM</th><th>Nodes</th><th>Runs</th></tr></thead>
@@ -2778,6 +2770,20 @@ function render(r) {
               <td><strong>${plan.workerCPU}</strong></td>
               <td><strong>${plan.workerMem} GB</strong></td>
               <td><strong>${plan.workerNodes}</strong></td>
+              <td></td>
+            </tr>
+            <tr style="background:var(--panel-2);opacity:0.75;">
+              <td><em>+ ~15% sys overhead (kubelet, OS, CNI, DaemonSets)</em></td>
+              <td><em>+${plan.clusterCPU - plan.workerCPU}</em></td>
+              <td><em>+${plan.clusterMem - plan.workerMem} GB</em></td>
+              <td></td>
+              <td></td>
+            </tr>
+            <tr style="background:var(--panel-2);font-weight:700;">
+              <td>Provision target</td>
+              <td>${plan.clusterCPU}</td>
+              <td>${plan.clusterMem} GB</td>
+              <td></td>
               <td></td>
             </tr>
           </tbody>
@@ -2854,9 +2860,8 @@ function render(r) {
     });
     const rows = Object.entries(tally).sort((a,b) => b[1].count - a[1].count);
     const total = rows.reduce((s,[,v]) => s + v.count, 0);
-    const procTitle = r.deployment === "k8s"
-      ? `${label} — ${r.cloudLabel} VMs for worker pool`
-      : `${label} — ${r.cloudLabel} VM procurement list`;
+    if (r.deployment === "k8s") return h;
+    const procTitle = `${label} — ${r.cloudLabel} VM procurement list`;
     h += `<div class="panel"><h2>${procTitle}</h2>
       <table>
         <thead><tr><th>VM type</th><th>${r.cpuLabel}</th><th>RAM</th><th>Count</th><th>Used by</th></tr></thead>
@@ -2962,10 +2967,10 @@ function render(r) {
   applied.push(`Artifactory${r.provisionNginx ? ", Nginx" : ""}, Xray: dedicated VM/node per replica (no co-mingling between these services).`);
   if (isAP) {
     const scaleDesc = r.passiveScale === "hot" ? "identical replica counts for instant failover" : "1 replica per component (RabbitMQ kept at 3 for quorum), DB at full sizing for fast scale-up";
-    applied.push(`<strong>Active+Passive DR topology</strong> — passive site sized as <em>${r.passiveScale === "hot" ? "Hot mirror" : "Warm minimal"}</em>: ${scaleDesc}. Use Artifactory federation / replication for data sync between sites.`);
+    applied.push(`<strong>Active-Passive DR topology</strong> — passive site sized as <em>${r.passiveScale === "hot" ? "Active-Standby" : "Warm Standby"}</em>: ${scaleDesc}. Use Artifactory federation / replication for data sync between sites.`);
   }
   if (isAA) {
-    applied.push("<strong>Active+Active topology</strong> — two full active sites, each sized identically and both serving traffic. Use Artifactory Federated repositories (bidirectional) + Access Federation for cross-site sync, and a global LB / GSLB (geo or weighted DNS) to distribute clients. Each site has its own database, RabbitMQ and binary store; plan for replication lag and write-conflict handling.");
+    applied.push("<strong>Active-Active topology</strong> — two full active sites, each sized identically and both serving traffic. Use Artifactory Federated repositories (bidirectional) + Access Federation for cross-site sync, and a global LB / GSLB (geo or weighted DNS) to distribute clients. Each site has its own database, RabbitMQ and binary store; plan for replication lag and write-conflict handling.");
   }
   html += `<div style="margin-top:14px;"><div class="hint" style="margin-bottom:6px;">Applied in this configuration:</div>`;
   applied.forEach(a => { html += `<div class="notice ok" style="margin-bottom:6px;">${a}</div>`; });
@@ -3042,8 +3047,8 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
         <li><strong>Connections:</strong> ${r.dbInstances === "dedicated" ? "size each instance for its product's connection cap" : `a shared instance needs <code>max_connections</code> ≥ <strong>${totalConns.toLocaleString()}</strong> (sum across all product databases)`} plus headroom for this tier.</li>
         <li><strong>Driver:</strong> JFrog bundles the PostgreSQL JDBC driver; for other engines (rarely supported) supply the driver JAR.</li>
         ${r.dbMode === "colocated" && r.ha ? `<li><strong>HA:</strong> run a primary + synchronous standby (or Patroni / repmgr) with automatic failover; the sizing above provisions 2 DB nodes per service.</li>` : ""}
-        ${isAP ? `<li><strong>Active+Passive:</strong> run an independent database (or a cross-region read replica promoted on failover) at each site — size each site identically.</li>` : ""}
-        ${isAA ? `<li><strong>Active+Active:</strong> each active site runs its own independent database (sized identically). Data sync is via Artifactory federation, not DB-level replication.</li>` : ""}
+        ${isAP ? `<li><strong>Active-Passive:</strong> run an independent database (or a cross-region read replica promoted on failover) at each site — size each site identically.</li>` : ""}
+        ${isAA ? `<li><strong>Active-Active:</strong> each active site runs its own independent database (sized identically). Data sync is via Artifactory federation, not DB-level replication.</li>` : ""}
         <li><strong>TLS:</strong> enable <code>sslmode=verify-full</code> in the JDBC URL for encrypted connections to the database.</li>
       </ul>
       <div class="hint">Reference: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configuring-the-database" target="_blank">JFrog — Configuring the Database (PostgreSQL)</a> &middot; <a href="https://jfrog.com/help/r/xray-tuning-and-maximizing-your-xray-s-database/xray-tuning-and-maximizing-your-xray-s-database" target="_blank">Xray — Database connection sizing &amp; tuning</a>.</div>
@@ -3086,7 +3091,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
         </li>
         <li><strong>Long-running scans:</strong> raise <code>consumer_timeout</code> (e.g. ≥ 30 min) so Xray scan messages aren't dropped mid-processing.</li>
         <li><strong>TLS (optional):</strong> terminate AMQPS on <code>5671</code> with CA-signed certs for in-transit encryption.</li>
-        ${isMulti ? `<li><strong>${isAA ? "Active+Active" : "Active+Passive"}:</strong> run an independent external RabbitMQ cluster at each site (Xray does not replicate RMQ across sites) — the recommended size applies per site.</li>` : ""}
+        ${isMulti ? `<li><strong>${isAA ? "Active-Active" : "Active-Passive"}:</strong> run an independent external RabbitMQ cluster at each site (Xray does not replicate RMQ across sites) — the recommended size applies per site.</li>` : ""}
       </ul>
       <div class="hint">Externalizing RabbitMQ moves the messaging capacity off the JFrog nodes but does not eliminate it — size your external cluster at least as large as the recommendation above. The same applies to an external load balancer: it runs on its own (often managed/auto-scaled) infrastructure, which is why neither appears in the node totals.</div>
       <div class="hint" style="margin-top:6px;">Reference: <a href="https://docs.jfrog.com/installation/docs/xray-and-rabbitmq-nodes-recommendations_xray-system-requirements-and-platform-support" target="_blank">JFrog — Configuring an External RabbitMQ</a>.</div>
@@ -3111,7 +3116,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
         <li><strong>Persistence:</strong> the Catalog cache is rebuildable — RDB snapshots are usually enough; enable AOF only if you want faster warm restarts.</li>
         <li><strong>Ports:</strong> <code>6379</code> (Valkey/Redis), <code>6380</code> (TLS), <code>16379</code> (cluster bus) and <code>26379</code> (Sentinel) between Catalog ↔ Valkey and between Valkey nodes.</li>
         <li><strong>Auth/TLS:</strong> set <code>requirepass</code> (or ACL users) and terminate TLS on <code>6380</code> with CA-signed certs.</li>
-        ${isMulti ? `<li><strong>${isAA ? "Active+Active" : "Active+Passive"}:</strong> run an independent Valkey cluster at each site — the recommended size applies per site.</li>` : ""}
+        ${isMulti ? `<li><strong>${isAA ? "Active-Active" : "Active-Passive"}:</strong> run an independent Valkey cluster at each site — the recommended size applies per site.</li>` : ""}
         <li><strong>Point Catalog at it</strong> in <code>system.yaml</code> (field names are version-specific — confirm against the Curation/Catalog docs):
           <blockquote style="white-space:pre; font-family:monospace; font-style:normal;">catalog:
   valkey:
@@ -3159,7 +3164,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
         </thead>
         <tbody>
           ${TIER_ROWS.map(t => `
-          <tr${t.tier === TIER_LABEL[r.tier] ? ' style="background:var(--accent-bg,#e8f4fb);font-weight:600;"' : ""}>
+          <tr${t.tier === TIER_LABEL[r.tier] ? ' style="background:rgba(64,191,106,0.18);font-weight:600;"' : ""}>
             <td>${t.tier}${t.tier === TIER_LABEL[r.tier] ? ' <span class="chip warn" style="font-size:10px;padding:1px 5px;">current</span>' : ""}</td>
             <td>${t.conns}</td>
             <td>${t.rpm}</td>
@@ -3186,7 +3191,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
 
   /* Reference */
   html += `
-    <details>
+    <details style="--link-color:#6dd4a0;">
       <summary>How these numbers are derived</summary>
       <p><strong>Effective tier</strong> = max of two inputs: concurrent connections tier (reference architecture: ≤100 Small, ≤500 Medium, ≤1,200 Large, ≤3,000 XLarge, ≤6,000 2XLarge) and RPM tier (≤6K Small, ≤50K Medium, ≤100K Large, ≤200K XLarge, ≤500K 2XLarge).</p>
       <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/" target="_blank">reference architecture pages</a>. Replicas by tier — Artifactory 1/2/3/4/6, Nginx and Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3. <strong>JAS</strong> deployment differs by model: on <em>VMs</em>, JAS requires dedicated servers scaled by artifact volume — 1 node (≤100K, 6 vCPU/24 GB/500 GB), 2 nodes (≤1M, 8 vCPU/24 GB/300 GB), 4 nodes (≤2M), 8 nodes (≤10M) per the <a href="https://docs.jfrog.com/installation/docs/jfrog-advanced-security-prerequisites" target="_blank">JAS prerequisites table</a>. On <em>Kubernetes</em>, JAS runs within the Xray Helm chart (xray.jas.enabled: true) — no separate node pool; ephemeral scan jobs run on the Xray pool or a tainted sub-pool.</p>
@@ -3227,3 +3232,31 @@ document.addEventListener("change", paintRadioStates);
 paintRadioStates();
 toggleConditionalFields();
 calculate();
+
+/* ---------- Input-panel tooltips ---------- */
+(function initTooltips() {
+  const bubble = document.createElement("div");
+  bubble.id = "tooltip-bubble";
+  document.body.appendChild(bubble);
+
+  function move(e) {
+    const bw = bubble.offsetWidth, bh = bubble.offsetHeight;
+    const vw = window.innerWidth,  vh = window.innerHeight;
+    let x = e.clientX + 16, y = e.clientY - Math.round(bh / 2);
+    if (x + bw > vw - 8) x = e.clientX - bw - 12;
+    if (y < 8) y = 8;
+    if (y + bh > vh - 8) y = vh - bh - 8;
+    bubble.style.left = x + "px";
+    bubble.style.top  = y + "px";
+  }
+
+  document.querySelectorAll(".tip-icon").forEach(el => {
+    el.addEventListener("mouseenter", e => {
+      bubble.textContent = el.getAttribute("data-tip");
+      bubble.classList.add("visible");
+      move(e);
+    });
+    el.addEventListener("mousemove", move);
+    el.addEventListener("mouseleave", () => bubble.classList.remove("visible"));
+  });
+})();

@@ -255,7 +255,46 @@
     padding: 16px 32px; border-top: 1px solid var(--border);
   }
   footer a { color: var(--muted); }
+  a { color: var(--link-color, var(--accent, #40bf6a)); }
+  .notice a { color: inherit; text-decoration: underline; opacity: 0.9; }
   .placeholder { color: var(--muted); font-size: 13px; padding: 24px; text-align: center; }
+  .tip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 600;
+    cursor: help;
+    vertical-align: middle;
+    margin-left: 4px;
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .tip-icon:hover { border-color: var(--accent); color: var(--accent); }
+  #tooltip-bubble {
+    position: fixed;
+    z-index: 9999;
+    max-width: 300px;
+    background: #1f232c;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.6;
+    pointer-events: none;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  #tooltip-bubble.visible { opacity: 1; }
   blockquote {
     margin: 4px 0; padding: 6px 10px;
     border-left: 2px solid var(--accent); color: var(--muted);
