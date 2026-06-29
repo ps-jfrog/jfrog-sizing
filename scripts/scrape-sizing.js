@@ -69,15 +69,15 @@ function parseTable($, table) {
   );
   if (!tiersMatch) return null;
 
-  const result = {};
+  const result = [];
   for (let i = 1; i < rows.length; i++) {
     const cells  = $(rows[i]).find('th, td').toArray();
     if (cells.length < 2) continue;
     const label  = $(cells[0]).text().trim();
     const values = cells.slice(1, 6).map(c => $(c).text().trim());
-    if (label) result[label] = values;
+    if (label) result.push({ label, vals: values });
   }
-  return result;
+  return result.length > 0 ? result : null;
 }
 
 /* ── Compute-page parser ──────────────────────────────────────────────────── */
@@ -118,7 +118,7 @@ function parseComputePage(html) {
     const rows = parseTable($, el);
     if (!rows) return;
 
-    for (const [label, vals] of Object.entries(rows)) {
+    for (const { label, vals } of rows) {
       const lc = label.toLowerCase().replace(/\s+/g, ' ').trim();
 
       // ── Replica counts ────────────────────────────────────────────────────
@@ -188,15 +188,16 @@ function parseStoragePage(html) {
   });
 
   let section   = null; // 'artifactory' | 'xray'
-  let component = null; // current component being written
+  let component = null; // current component from headings
+  let lastComp  = null; // most recently identified component from row labels
 
   $('h2, h3, h4, table').each((_, el) => {
     const tag = el.tagName.toLowerCase();
 
     if (tag !== 'table') {
       const text = $(el).text().trim().toLowerCase();
-      if      (text === 'artifactory' || text.startsWith('artifactory ')) { section = 'artifactory'; component = 'artifactory'; }
-      else if (text === 'xray'        || text.startsWith('xray '))        { section = 'xray';        component = 'xray'; }
+      if      (text === 'artifactory' || text.startsWith('artifactory ')) { section = 'artifactory'; component = 'artifactory'; lastComp = null; }
+      else if (text === 'xray'        || text.startsWith('xray '))        { section = 'xray';        component = 'xray';        lastComp = null; }
       return;
     }
 
@@ -205,24 +206,40 @@ function parseStoragePage(html) {
     const rows = parseTable($, el);
     if (!rows) return;
 
-    for (const [label, vals] of Object.entries(rows)) {
+    for (const { label, vals } of rows) {
       const lc = label.toLowerCase().replace(/\s+/g, ' ').trim();
 
-      // Determine which component this row belongs to.
+      // Determine which component this row belongs to, tracking lastComp so that
+      // unlabeled rows (IOPS, Throughput) continue to apply to the right component.
       let comp;
-      if      (lc.includes('rabbitmq'))      comp = 'rabbitmq';
-      else if (lc.includes('jas'))           comp = 'jas';
-      else if (lc.includes('postgresql') || lc.includes('postgres') || lc.includes('cloud sql')) {
-        comp = section === 'artifactory' ? 'artifactoryDb' : 'xrayDb';
-      } else comp = component;
+      if (lc.includes('rabbitmq')) {
+        comp = lastComp = 'rabbitmq';
+      } else if (lc.includes('jas')) {
+        comp = lastComp = 'jas';
+      } else if (lc.includes('postgresql') || lc.includes('postgres') || lc.includes('cloud sql')) {
+        comp = lastComp = (section === 'artifactory' ? 'artifactoryDb' : 'xrayDb');
+      } else if (lc.includes('artifactory')) {
+        comp = lastComp = 'artifactory';
+      } else if (lc.includes('xray')) {
+        comp = lastComp = 'xray';
+      } else {
+        comp = lastComp ?? component;
+      }
 
       if (!storage[comp]) continue;
 
       if (lc.includes('disk size') || (lc.includes('disk') && lc.includes('(gb)'))) {
+        // Some tiers may show "-" meaning "same as the first explicit value".
+        const hasFrac = vals.some(v => v.toLowerCase().includes('1/3') || v.toLowerCase().includes('filestore'));
+        const firstGb = vals.find(v => v !== '-' && v !== '' && !v.toLowerCase().includes('1/3') && !v.toLowerCase().includes('filestore'));
         TIERS.forEach((t, i) => {
           const v = vals[i].toLowerCase();
           if (v.includes('1/3') || v.includes('filestore')) {
             storage[comp][t].frac = 1 / 3;
+          } else if (vals[i] === '-' || vals[i] === '') {
+            // Inherit: propagate the dominant value from this row.
+            if (hasFrac) storage[comp][t].frac = 1 / 3;
+            else if (firstGb !== undefined) storage[comp][t].gb = parseInt(firstGb) || 0;
           } else {
             storage[comp][t].gb = parseInt(vals[i]) || 0;
           }
