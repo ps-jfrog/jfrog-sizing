@@ -45,6 +45,107 @@ function tierFromRpm(rpm) {
 function maxTier(a, b) {
   return TIER_ORDER.indexOf(a) >= TIER_ORDER.indexOf(b) ? a : b;
 }
+function bumpTier(tier, delta) {
+  const i = TIER_ORDER.indexOf(tier);
+  return TIER_ORDER[Math.max(0, Math.min(TIER_ORDER.length - 1, i + delta))];
+}
+
+const VALID_ARTI_REPLICAS = [1, 2, 3, 4, 6];
+
+function tierFromArtiReplicas(n, ha) {
+  if (!ha) return "small";
+  for (let i = VALID_ARTI_REPLICAS.length - 1; i >= 0; i--) {
+    if (n >= VALID_ARTI_REPLICAS[i]) return TIER_ORDER[i];
+  }
+  return "small";
+}
+function snapArtiReplicas(n, ha) {
+  if (!ha) return { nodes: 1, snapped: n > 1, requested: n };
+  if (VALID_ARTI_REPLICAS.includes(n)) return { nodes: n, snapped: false, requested: n };
+  let best = 1;
+  for (const v of VALID_ARTI_REPLICAS) { if (v <= n) best = v; }
+  return { nodes: best, snapped: true, requested: n };
+}
+function computeBaseline({ loadTier, ha, topology, passiveScale }) {
+  const activeNodes = ha ? REPLICAS.artifactory[loadTier] : 1;
+  let passiveNodes = 0;
+  if (topology === "active-active") passiveNodes = activeNodes;
+  else if (topology === "active-passive") passiveNodes = passiveScale === "warm" ? 1 : activeNodes;
+  return { tier: loadTier, activeNodes, passiveNodes, totalLicenses: activeNodes + passiveNodes };
+}
+function allocateLicenses({ total, topology, passiveScale, splitMode, licensePrimary }) {
+  if (topology === "single") return { primary: total, secondary: 0, splitMode: "single" };
+  const isWarm = topology === "active-passive" && passiveScale === "warm";
+  if (isWarm) return { primary: Math.max(0, total - 1), secondary: Math.min(1, total), splitMode: "warm" };
+  if (splitMode === "custom") {
+    const primary = Math.max(1, Math.min(total - 1, licensePrimary || Math.ceil(total / 2)));
+    return { primary, secondary: total - primary, splitMode: "custom" };
+  }
+  const primary = Math.ceil(total / 2);
+  return { primary, secondary: total - primary, splitMode: "balanced" };
+}
+function applySizingBias(allocation, bias, baseline, { topology, passiveScale }) {
+  const total = allocation.primary + allocation.secondary;
+  if (bias === "normal") return { ...allocation, biased: false };
+  const minSecondary = baseline.passiveNodes;
+  const minPrimary = baseline.activeNodes;
+  const slack = Math.max(0, total - minPrimary - minSecondary);
+  let primary = allocation.primary, secondary = allocation.secondary;
+  if (bias === "performance") {
+    primary = Math.min(total - Math.max(0, minSecondary), Math.max(primary, minPrimary + slack));
+    secondary = total - primary;
+  } else if (bias === "resilience") {
+    const isWarm = topology === "active-passive" && passiveScale === "warm";
+    if (!isWarm) {
+      secondary = Math.min(total - Math.max(1, minPrimary), Math.max(secondary, minSecondary + slack));
+      primary = total - secondary;
+    }
+  }
+  return { primary, secondary, splitMode: allocation.splitMode, biased: true };
+}
+function compareEffectiveToBaseline(effective, baseline, { sizingBias, licenseMode }) {
+  const tierDelta = TIER_ORDER.indexOf(effective.activeTier) - TIER_ORDER.indexOf(baseline.tier);
+  const passiveTierDelta = effective.passiveTier
+    ? TIER_ORDER.indexOf(effective.passiveTier) - TIER_ORDER.indexOf(baseline.tier) : 0;
+  const activeNodeDelta = effective.activeNodes - baseline.activeNodes;
+  const passiveNodeDelta = effective.passiveNodes - baseline.passiveNodes;
+  return {
+    sizingBias, licenseMode, tierDelta, passiveTierDelta, activeNodeDelta, passiveNodeDelta,
+    isOverBaseline: tierDelta > 0 || activeNodeDelta > 0 || passiveNodeDelta > 0,
+    isUnderBaseline: tierDelta < 0 || activeNodeDelta < 0 || passiveNodeDelta < 0,
+    hasBiasEffect: sizingBias !== "normal"
+  };
+}
+function totalsOf(comps) {
+  let cpu = 0, mem = 0, disk = 0, nodes = 0;
+  comps.forEach(c => {
+    c.totalCPU  = c.cpu * c.replicas;
+    c.totalMem  = c.memGB * c.replicas;
+    c.totalDisk = c.diskGB * c.replicas;
+    cpu += c.totalCPU; mem += c.totalMem; disk += c.totalDisk; nodes += c.replicas;
+  });
+  return { cpu, mem, disk, nodes };
+}
+function buildPassiveFromActive(components, { topology, passiveScale, resilienceOverride }) {
+  const aa = topology === "active-active";
+  const useHot = passiveScale === "hot" || resilienceOverride;
+  return components.map(c => {
+    const copy = { ...c };
+    if (aa) {
+      copy.note = `Active site B — ${copy.note}`;
+    } else if (!useHot) {
+      if (c.name === "RabbitMQ (Xray)") copy.replicas = c.replicas >= 3 ? 3 : 1;
+      else if (c.name.startsWith("PostgreSQL")) copy.replicas = c.replicas;
+      else copy.replicas = 1;
+      copy.note = `Warm standby — ${copy.note}`;
+    } else {
+      copy.note = resilienceOverride && passiveScale === "warm"
+        ? `Resilience bias — full mirror — ${copy.note}`
+        : `Active-Standby — ${copy.note}`;
+    }
+    return copy;
+  });
+}
 
 // Replicas per tier per component (reference architecture, identical across clouds).
 // Fallback values — overridden at runtime by sizing-data.json when served over HTTP.
@@ -388,6 +489,16 @@ function buildSizingXlsx(r) {
   inputs.push(["Indexed artifacts — Xray (projected)", r.xrayEnabled ? r.xrayArtifacts : "No Xray"]);
   inputs.push(["Local cache-fs", r.cacheFsGB > 0 ? `${r.cacheFsPct}% of binaries (${fmtGB(r.cacheFsGB)}/node)` : "Disabled"]);
   inputs.push(["High Availability", r.ha ? "Yes" : "No"]);
+  inputs.push(["Sizing bias", r.sizingBias === "performance" ? "Performance" : r.sizingBias === "resilience" ? "Resilience" : "Normal"]);
+  inputs.push(["Load baseline tier", String(r.loadTier || r.baseline?.tier || "").toUpperCase()]);
+  inputs.push(["Artifactory licenses purchased", r.licenseMode ? r.licensePurchased : "Auto (from load)"]);
+  if (r.licenseMode && r.licenseAllocation) {
+    inputs.push(["License split", r.licenseAllocation.splitMode]);
+    if (r.licenseAllocation.secondary > 0) {
+      inputs.push(["Licenses — primary site", r.licenseAllocation.primary]);
+      inputs.push(["Licenses — secondary site", r.licenseAllocation.secondary]);
+    }
+  }
   inputs.push(["Load balancer", r.externalLB ? r.lbDisplay : "None"]);
   inputs.push(["NGINX tier provisioned", r.provisionNginx ? "Yes" : "No"]);
   inputs.push(["RabbitMQ", !r.xrayEnabled ? "N/A (no Xray)" : (r.externalRMQ ? "External" : "Bundled")]);
@@ -500,11 +611,16 @@ function buildSizingXlsx(r) {
   const licRows = [["Field", "Value"]];
   licRows.push(["Minimum subscription tier", lic.tier]);
   if (lic.jas) licRows.push(["Add-on", "JFrog Advanced Security (JAS)"]);
+  if (r.licenseMode && lic.purchased != null) licRows.push(["Licenses purchased", lic.purchased]);
   if (isMulti) {
     licRows.push([`Artifactory licenses — ${siteA}`, lic.active]);
     licRows.push([`Artifactory licenses — ${siteB}`, lic.passive]);
   }
-  licRows.push(["Artifactory licenses — total", lic.total]);
+  licRows.push(["Artifactory licenses — deployed", lic.total]);
+  if (r.licenseMode && lic.unused > 0) licRows.push(["Licenses unused", lic.unused]);
+  if (r.biasDelta && (r.biasDelta.isOverBaseline || r.biasDelta.isUnderBaseline)) {
+    licRows.push(["vs load baseline", r.biasDelta.isOverBaseline ? "Over-allocated" : "Under-allocated"]);
+  }
   if (lic.edge) licRows.push(["Distribution Edge", "Edge nodes carry separate Edge licenses"]);
   addSheet("Licensing", licRows);
 
@@ -1856,12 +1972,236 @@ function downloadArtifact(r) {
 
 /* ---------- Calculator ---------- */
 
+function buildSiteComponents(ctx) {
+  const {
+    tier, artiReplicas, siteNotePrefix, cloud, deployment, ha, svc, arch, cpuLabel,
+    cacheFsGB, cacheFsPct, binaryTB, provisionNginx, externalLB, lbDisplay,
+    xrayEnabled, xrayArtifacts, externalRMQ, externalValkey, dbMode, dbInstances
+  } = ctx;
+  const prefix = siteNotePrefix ? `${siteNotePrefix} — ` : "";
+
+  function buildRow(key, displayName, opts = {}) {
+    const archEntry = arch[key][tier];
+    let replicas    = ha ? REPLICAS[key][tier] : 1;
+    if (opts.forceReplicas != null) replicas = opts.forceReplicas;
+    const storage   = opts.storage || STORAGE[key][tier];
+    return {
+      name: displayName, replicas, instance: archEntry.instance,
+      cpu: archEntry.cpu, memGB: archEntry.memGB,
+      diskGB: storage.gb, iops: storage.iops, mbps: storage.mbps,
+      note: (opts.note || "") ? prefix + opts.note : prefix.slice(0, -3)
+    };
+  }
+
+  const components = [];
+  let artiDisk = STORAGE.artifactory[tier].gb;
+  let artiNote = "Each replica on its own VM (JFrog dedicated-instance rule).";
+  let artiExtraCpu = 0, artiExtraMem = 0;
+
+  if (svc.distribution) {
+    if (deployment === "k8s") artiNote += " Distribution runs as a separate pod — see Distribution row.";
+    else {
+      artiDisk += 200; artiExtraCpu += 2; artiExtraMem += 2;
+      artiNote += ` Distribution co-located (+2 ${cpuLabel} / +2 GB / +200 GB — no separate VMs).`;
+    }
+  }
+  if (cacheFsGB > 0) {
+    artiDisk += cacheFsGB;
+    artiNote += ` Cache-fs +${cacheFsGB} GB local SSD (${cacheFsPct}% of binaries) fronting the object store.`;
+  }
+  if (svc.appTrust) {
+    if (deployment === "k8s") artiNote += " AppTrust + UnifiedPolicy run as separate pods on this node pool (see pool total).";
+    else {
+      artiExtraCpu = 4; artiExtraMem = 2; artiDisk += 100;
+      artiNote += ` AppTrust + UnifiedPolicy co-locate on this host (+4 ${cpuLabel} / +2 GB / +100 GB included in node sizing — no separate VMs).`;
+    }
+  }
+  const artiComp = buildRow("artifactory", "Artifactory", {
+    forceReplicas: artiReplicas,
+    storage: { gb: artiDisk, iops: STORAGE.artifactory[tier].iops, mbps: STORAGE.artifactory[tier].mbps },
+    note: artiNote
+  });
+  if (artiExtraCpu > 0) { artiComp.cpu += artiExtraCpu; artiComp.memGB += artiExtraMem; }
+  components.push(artiComp);
+
+  if (provisionNginx) {
+    components.push(buildRow("nginx", "Nginx (reverse proxy / TLS)", {
+      storage: { gb: 50, iops: 3000, mbps: 200 },
+      note: externalLB
+        ? `Dedicated VM per replica, sitting behind the ${lbDisplay}.`
+        : "Dedicated VM per replica (JFrog rule). Acts as the reverse proxy / TLS terminator."
+    }));
+  }
+
+  let externalRmqSpec = null;
+  if (xrayEnabled) {
+    let xrayName = "Xray", xrayExtraCpu = 0, xrayExtraMemGB = 0, xrayExtraDiskGB = 0;
+    let xrayNote = "Dedicated VM per replica. Index time scales with artifact count.";
+    if (svc.jas && deployment === "k8s") {
+      const jasCpu = xrayArtifacts <= 100000 ? 6 : 8, jasMemGB = 24, jasDiskGB = xrayArtifacts <= 100000 ? 500 : 300;
+      xrayExtraCpu = jasCpu; xrayExtraMemGB = jasMemGB; xrayExtraDiskGB = jasDiskGB;
+      xrayName = "Xray + JAS";
+      xrayNote = `JAS runs inside the Xray pod (extraSystemYaml.jas.enabled: true) — no separate JAS node pool on K8s. JAS overhead per replica: +${jasCpu} ${cpuLabel} / +${jasMemGB} GB RAM / +${jasDiskGB} GB disk. Ephemeral scanner jobs (exposuresscannersjob etc.) need additional node headroom — see Notes &amp; warnings.`;
+    }
+    const xrayBaseArch = arch.xray[tier], xrayBaseStor = STORAGE.xray[tier];
+    const xrayRow = buildRow("xray", xrayName, {
+      storage: { gb: xrayBaseStor.gb + xrayExtraDiskGB, iops: xrayBaseStor.iops, mbps: xrayBaseStor.mbps },
+      note: xrayNote
+    });
+    if (xrayExtraCpu > 0) { xrayRow.cpu = xrayBaseArch.cpu + xrayExtraCpu; xrayRow.memGB = xrayBaseArch.memGB + xrayExtraMemGB; }
+    components.push(xrayRow);
+    const oddify = n => (n <= 1 ? n : (n % 2 === 0 ? n + 1 : n));
+    const rmqBase = ha ? REPLICAS.rabbitmq[tier] : (xrayArtifacts > 100000 ? 3 : 1);
+    const rmqReplicas = oddify(rmqBase);
+    const rmqArch = arch.rabbitmq[tier], rmqStor = STORAGE.rabbitmq[tier];
+    const quorumNote = rmqReplicas >= 3
+      ? `Odd node count (${rmqReplicas}) enforced for quorum — tolerates ${(rmqReplicas - 1) / 2} node failure${(rmqReplicas - 1) / 2 === 1 ? "" : "s"}.`
+      : "Single-node mode — no quorum / no failure tolerance.";
+    if (externalRMQ) {
+      externalRmqSpec = { replicas: rmqReplicas, instance: rmqArch.instance, cpu: rmqArch.cpu, memGB: rmqArch.memGB,
+        diskGB: rmqStor.gb, iops: rmqStor.iops, mbps: rmqStor.mbps, quorumNote };
+    } else {
+      const splitNote = xrayArtifacts > 100000 || ha
+        ? "Split mode — RabbitMQ on separate VMs from Xray (JFrog HA rule)."
+        : "Co-located permitted at ≤100K artifacts (still split here for safety).";
+      components.push(buildRow("rabbitmq", "RabbitMQ (Xray)", {
+        forceReplicas: rmqReplicas, note: `${splitNote} ${quorumNote}`
+      }));
+    }
+  }
+
+  if (svc.jas && xrayEnabled && deployment === "vm") {
+    let jasNodes, jasCpu, jasMemGB, jasDiskGB;
+    if (xrayArtifacts <= 100000) { jasNodes = 1; jasCpu = 6; jasMemGB = 24; jasDiskGB = 500; }
+    else if (xrayArtifacts <= 1000000) { jasNodes = 2; jasCpu = 8; jasMemGB = 24; jasDiskGB = 300; }
+    else if (xrayArtifacts <= 2000000) { jasNodes = 4; jasCpu = 8; jasMemGB = 24; jasDiskGB = 300; }
+    else { jasNodes = 8; jasCpu = 8; jasMemGB = 24; jasDiskGB = 300; }
+    components.push({
+      name: "JAS (Advanced Security)", replicas: jasNodes, instance: arch.jas[tier].instance,
+      cpu: jasCpu, memGB: jasMemGB, diskGB: jasDiskGB, iops: 3000, mbps: 500,
+      note: prefix + `JFrog JAS prerequisites: ${jasNodes} dedicated server${jasNodes > 1 ? "s" : ""} for ${xrayArtifacts.toLocaleString()} indexed artifacts (${jasCpu} ${cpuLabel} / ${jasMemGB} GB RAM / ${jasDiskGB} GB SSD @ 3K IOPS). JAS modules run alongside Xray but on dedicated hosts.`
+    });
+  }
+
+  if (svc.workers) {
+    components.push({
+      name: "Workers", replicas: ha ? 2 : 1, instance: arch.nginx[tier].instance,
+      cpu: 4, memGB: 4, diskGB: 50, iops: 3000, mbps: 200,
+      note: prefix + "Hardware sizing matrix: 4 CPU / 4 GB / 50 GB. Requires Artifactory ≥ 7.98.4."
+    });
+  }
+  if (svc.appTrust && deployment === "k8s") {
+    const atReplicas = ha ? 2 : 1;
+    components.push({
+      name: "AppTrust", replicas: atReplicas, instance: arch.artifactory[tier].instance,
+      cpu: 1, memGB: 2, diskGB: 0, iops: 0, mbps: 0,
+      note: prefix + `Separate pod on the Artifactory node pool — no dedicated pool. Pod limits: 1 ${cpuLabel} / 2 GB.`
+    });
+    components.push({
+      name: "UnifiedPolicy", replicas: atReplicas, instance: arch.artifactory[tier].instance,
+      cpu: 1, memGB: 1, diskGB: 0, iops: 0, mbps: 0,
+      note: prefix + `Separate pod on the Artifactory node pool — no dedicated pool. Pod limits: 0.5 ${cpuLabel} / 1 GB.`
+    });
+  }
+  if (svc.distribution && deployment === "k8s") {
+    const distReplicas = ha ? 2 : 1, distDisk = ha ? 20 : 5;
+    components.push({
+      name: "Distribution", replicas: distReplicas, instance: arch.nginx[tier].instance,
+      cpu: 1, memGB: 2, diskGB: distDisk, iops: 3000, mbps: 200,
+      note: prefix + `Separate StatefulSet pod — own PVC (${distDisk} GB per replica). Pod limits: 1 ${cpuLabel} / 2 GB.`
+    });
+  }
+
+  let externalValkeySpec = null;
+  if (svc.curation) {
+    const proxyVM = arch.nginx[tier].instance;
+    let catalogMem = 16;
+    let catalogNote = "Catalog service — metadata store for Curation. Curation itself runs as a feature inside the existing Artifactory + Xray pods (no additional VMs/pods).";
+    if (!externalValkey) { catalogMem += 8; catalogNote += " Valkey co-located on the Catalog nodes (+8 GB RAM, no new VMs)."; }
+    components.push({
+      name: "Catalog", replicas: ha ? 2 : 1, instance: proxyVM,
+      cpu: 8, memGB: catalogMem, diskGB: 100, iops: 3000, mbps: 500,
+      note: prefix + catalogNote
+    });
+    if (externalValkey) {
+      externalValkeySpec = { replicas: ha ? 3 : 1, instance: proxyVM, cpu: 2, memGB: 8, diskGB: 20, iops: 3000, mbps: 200 };
+    }
+  }
+
+  if (svc.runtime) {
+    components.push({
+      name: "Runtime (server)", replicas: ha ? 2 : 1, instance: arch.nginx[tier].instance,
+      cpu: 2, memGB: 4, diskGB: 50, iops: 3000, mbps: 200,
+      note: prefix + "JFrog Runtime server (separate jfrog/runtime release). Uses its own 'runtime' database. Sensors run as a per-node DaemonSet (no dedicated nodes)."
+    });
+  }
+
+  const dbProducts = [];
+  {
+    const adb = arch.artifactoryDb[tier], adbStor = STORAGE.artifactoryDb[tier];
+    dbProducts.push({ label:"Artifactory", db:"artifactory", user:"artifactory", cpu:adb.cpu, memGB:adb.memGB,
+      instance:adb.instance, maxConns:adb.maxConns, diskGB:Math.max(100, Math.round(binaryTB*1024*adbStor.frac)), iops:adbStor.iops, mbps:adbStor.mbps });
+    if (xrayEnabled) {
+      const xdb = arch.xrayDb[tier], xdbStor = STORAGE.xrayDb[tier];
+      dbProducts.push({ label:"Xray", db:"xraydb", user:"xray", cpu:xdb.cpu, memGB:xdb.memGB, instance:xdb.instance, maxConns:xdb.maxConns, diskGB:xdbStor.gb, iops:xdbStor.iops, mbps:xdbStor.mbps });
+    }
+    const sdb = arch.xrayDb.small;
+    if (svc.distribution) dbProducts.push({ label:"Distribution", db:"distribution", user:"distribution", cpu:sdb.cpu, memGB:sdb.memGB, instance:sdb.instance, maxConns:sdb.maxConns, diskGB:100, iops:4000, mbps:500 });
+    if (svc.curation)     dbProducts.push({ label:"Catalog", db:"catalogdb", user:"catalog", cpu:sdb.cpu, memGB:sdb.memGB, instance:sdb.instance, maxConns:sdb.maxConns, diskGB:200, iops:4000, mbps:500 });
+    if (svc.runtime)      dbProducts.push({ label:"Runtime", db:"runtime", user:"runtime", cpu:sdb.cpu, memGB:sdb.memGB, instance:sdb.instance, maxConns:sdb.maxConns, diskGB:50, iops:4000, mbps:500 });
+  }
+  const dbReplicas = dbMode === "colocated" && ha ? 2 : 1;
+  const dbTotalConns = dbProducts.reduce((s, d) => s + d.maxConns, 0);
+  if (dbInstances === "dedicated" && dbProducts.length > 1) {
+    dbProducts.forEach(d => components.push({
+      name: `PostgreSQL (${d.label} DB)`, replicas: dbReplicas,
+      instance: dbMode === "external" ? d.instance : `Co-located ${d.cpu} ${cpuLabel} / ${d.memGB} GB`,
+      cpu: d.cpu, memGB: d.memGB, diskGB: d.diskGB, iops: d.iops, mbps: d.mbps,
+      note: prefix + `${dbMode === "external" ? `External managed RDBMS (max ${d.maxConns} conns)` : "Co-located"} — dedicated instance for the ${d.label} database (${d.db}).${dbReplicas > 1 ? " Primary+standby for HA." : ""}`
+    }));
+  } else {
+    const big = dbProducts[0];
+    const sumDisk = dbProducts.reduce((s, d) => s + d.diskGB, 0);
+    components.push({
+      name: "PostgreSQL (shared)", replicas: dbReplicas,
+      instance: dbMode === "external" ? big.instance : `Co-located ${big.cpu} ${cpuLabel} / ${big.memGB} GB`,
+      cpu: big.cpu, memGB: big.memGB, diskGB: sumDisk, iops: big.iops, mbps: big.mbps,
+      note: prefix + `${dbMode === "external" ? "External managed RDBMS" : "Co-located"} — single instance hosting ${dbProducts.length} database${dbProducts.length === 1 ? "" : "s"} (${dbProducts.map(d => d.db).join(", ")}). Sized to the dominant (Artifactory) DB; set max_connections ≥ ${dbTotalConns}.${dbReplicas > 1 ? " Primary+standby for HA." : ""}`
+    });
+  }
+
+  return {
+    components, dbProducts, externalRmqSpec, externalValkeySpec,
+    artiDbMaxConns: arch.artifactoryDb[tier].maxConns,
+    xrayDbMaxConns: arch.xrayDb[tier].maxConns,
+    dbTotalConns
+  };
+}
+
 function toggleConditionalFields() {
   const deployment = document.querySelector('input[name="deployment"]:checked').value;
   const topology   = document.querySelector('input[name="topology"]:checked').value;
   document.getElementById("k8sPlacementField").style.display = deployment === "k8s" ? "" : "none";
   document.getElementById("infraTypeField").style.display = deployment === "vm" ? "" : "none";
   document.getElementById("passiveScaleField").style.display = topology === "active-passive" ? "" : "none";
+
+  const licenseRaw = document.getElementById("licensePurchased").value.trim();
+  const licensePurchased = licenseRaw !== "" ? parseInt(licenseRaw, 10) : 0;
+  const licenseMode = licensePurchased > 0;
+  const isMulti = topology !== "single";
+  const isWarm = topology === "active-passive" && document.querySelector('input[name="passiveScale"]:checked')?.value === "warm";
+  const licenseSplit = document.querySelector('input[name="licenseSplit"]:checked')?.value || "balanced";
+
+  document.getElementById("licenseSplitField").style.display = licenseMode && isMulti && !isWarm ? "" : "none";
+  document.getElementById("licensePrimaryField").style.display = licenseMode && isMulti && !isWarm && licenseSplit === "custom" ? "" : "none";
+  document.getElementById("licenseWarmHint").style.display = licenseMode && isWarm ? "" : "none";
+
+  if (licenseMode && isMulti && !isWarm && licenseSplit === "custom") {
+    const secondary = Math.max(0, licensePurchased - (parseInt(document.getElementById("licensePrimary").value, 10) || 1));
+    const hint = document.getElementById("licenseSecondaryHint");
+    if (hint) hint.textContent = `Secondary site: ${secondary} license${secondary === 1 ? "" : "s"}`;
+  }
+
   const usingLB = document.querySelector('input[name="lb"]:checked').value === "external";
   const nginxSkip = document.getElementById("nginxSkipRadio");
   if (nginxSkip) {
@@ -1962,12 +2302,16 @@ function calculate() {
   // RabbitMQ (Xray messaging). External removes the RMQ nodes from this footprint;
   // the recommended external spec + plugin/config requirements are surfaced separately.
   const externalRMQ  = document.querySelector('input[name="rmq"]:checked').value === "external";
+  const sizingBias   = document.querySelector('input[name="sizingBias"]:checked')?.value || "normal";
+  const licenseRaw   = document.getElementById("licensePurchased").value.trim();
+  const licensePurchased = licenseRaw !== "" ? parseInt(licenseRaw, 10) : 0;
+  const licenseMode  = licensePurchased > 0;
+  const licenseSplit = document.querySelector('input[name="licenseSplit"]:checked')?.value || "balanced";
+  const licensePrimaryInput = parseInt(document.getElementById("licensePrimary").value, 10) || 1;
 
-  // Effective tier = max of connections-implied and RPM-implied tier.
   const connsTier  = tierFromConns(activeClients);
   const rpmTierKey = tierFromRpm(rpm);
-  const tier       = maxTier(connsTier, rpmTierKey);
-  const tierMeta   = TIER_RPM[tier];
+  const loadTier   = maxTier(connsTier, rpmTierKey);
   const arch       = REF_ARCH[cloud];
   const cloudLabel = { aws:"AWS", azure:"Azure", gcp:"GCP", onprem:"Private Datacenter" }[cloud];
 
@@ -1976,349 +2320,99 @@ function calculate() {
     : { aws:"AWS ALB/NLB", azure:"Azure LB / Application Gateway", gcp:"Google Cloud Load Balancing", onprem:"External / hardware LB" }[cloud];
 
   const xrayEnabled = xrayChecked;
-
-  const infraType = document.querySelector('input[name="infra_type"]:checked')?.value || "vm"; // vm | baremetal
+  const infraType = document.querySelector('input[name="infra_type"]:checked')?.value || "vm";
   const cpuLabel  = infraType === "baremetal" ? "cores" : "vCPU";
+  const isMulti   = topology === "active-passive" || topology === "active-active";
 
-  // Per-tier DB connection caps (for the external-database max_connections guidance).
-  const artiDbMaxConns = arch.artifactoryDb[tier].maxConns;
-  const xrayDbMaxConns = arch.xrayDb[tier].maxConns;
+  const baseline = computeBaseline({ loadTier, ha, topology, passiveScale });
+  const siteCtxBase = {
+    cloud, deployment, ha, svc, arch, cpuLabel, cacheFsGB, cacheFsPct, binaryTB,
+    provisionNginx, externalLB, lbDisplay, xrayEnabled, xrayArtifacts, externalRMQ,
+    externalValkey, dbMode, dbInstances
+  };
 
-  // Helper: build a row from REF_ARCH + REPLICAS + STORAGE for a given component.
-  function buildRow(key, displayName, opts = {}) {
-    const archEntry = arch[key][tier];
-    let replicas    = ha ? REPLICAS[key][tier] : 1;
-    if (opts.forceReplicas != null) replicas = opts.forceReplicas;
-    const storage   = opts.storage || STORAGE[key][tier];
-    return {
-      name: displayName,
-      replicas,
-      instance: archEntry.instance,
-      cpu: archEntry.cpu,
-      memGB: archEntry.memGB,
-      diskGB: storage.gb,
-      iops: storage.iops,
-      mbps: storage.mbps,
-      note: opts.note || ""
-    };
-  }
+  let tier, tierMeta, components, dbProducts, externalRmqSpec, externalValkeySpec;
+  let artiDbMaxConns, xrayDbMaxConns, dbTotalConns;
+  let passiveComponents = null, passiveTotals = null;
+  let licenseAllocation = null, licenseSnapWarnings = [];
+  let effectiveActiveNodes = 0, effectivePassiveNodes = 0, passiveTier = null;
+  let resilienceOverride = false;
 
-  const components = [];
+  if (!licenseMode) {
+    tier = sizingBias === "performance" ? bumpTier(loadTier, 1) : loadTier;
+    tierMeta = TIER_RPM[tier];
+    const activeArti = ha ? REPLICAS.artifactory[tier] : 1;
+    const activeSite = buildSiteComponents({ ...siteCtxBase, tier, artiReplicas: activeArti });
+    components = activeSite.components;
+    dbProducts = activeSite.dbProducts;
+    externalRmqSpec = activeSite.externalRmqSpec;
+    externalValkeySpec = activeSite.externalValkeySpec;
+    artiDbMaxConns = activeSite.artiDbMaxConns;
+    xrayDbMaxConns = activeSite.xrayDbMaxConns;
+    dbTotalConns = activeSite.dbTotalConns;
+    effectiveActiveNodes = activeArti;
 
-  /* --- Artifactory (+ co-located: Distribution, AppTrust, UnifiedPolicy on VMs) --- */
-  let artiDisk = STORAGE.artifactory[tier].gb;
-  let artiNote = "Each replica on its own VM (JFrog dedicated-instance rule).";
-  // Extra CPU/RAM added to the Artifactory host for VM co-located services.
-  // Not used on K8s — those services run as separate pods sized independently below.
-  let artiExtraCpu = 0, artiExtraMem = 0;
-
-  if (svc.distribution) {
-    if (deployment === "k8s") {
-      // K8s: Distribution is a separate StatefulSet pod with its own PVC.
-      // A Distribution component will be pushed below — nothing to add to artiDisk here.
-      artiNote += " Distribution runs as a separate pod — see Distribution row.";
-    } else {
-      // VM/bare-metal: co-locates on each Artifactory host.
-      artiDisk += 200;               // JFrog HW matrix: 200 GB per node
-      artiExtraCpu += 2;            // JFrog HW matrix: 2 vCPU
-      artiExtraMem += 2;            // JFrog HW matrix: 2 GB
-      artiNote += ` Distribution co-located (+2 ${cpuLabel} / +2 GB / +200 GB — no separate VMs).`;
-    }
-  }
-  if (cacheFsGB > 0) {
-    artiDisk += cacheFsGB;
-    artiNote += ` Cache-fs +${cacheFsGB} GB local SSD (${cacheFsPct}% of binaries) fronting the object store.`;
-  }
-  if (svc.appTrust) {
-    if (deployment === "k8s") {
-      // K8s: AppTrust and UnifiedPolicy are separate pods on the Artifactory node pool.
-      // Their resource limits are counted in the cluster capacity plan via components below.
-      artiNote += " AppTrust + UnifiedPolicy run as separate pods on this node pool (see pool total).";
-    } else {
-      // VM/bare-metal: both services co-install on the same host as Artifactory.
-      // The Artifactory VM must be sized for the combined load.
-      artiExtraCpu = 4;  // AppTrust 2 + UnifiedPolicy 2 (JFrog hardware sizing matrix)
-      artiExtraMem = 2;  // AppTrust 1 GB + UnifiedPolicy 1 GB
-      artiDisk += 100;   // AppTrust 50 GB + UnifiedPolicy 50 GB
-      artiNote += ` AppTrust + UnifiedPolicy co-locate on this host (+4 ${cpuLabel} / +2 GB / +100 GB included in node sizing — no separate VMs).`;
-    }
-  }
-  const artiComp = buildRow("artifactory", "Artifactory", {
-    storage: { gb: artiDisk, iops: STORAGE.artifactory[tier].iops, mbps: STORAGE.artifactory[tier].mbps },
-    note: artiNote
-  });
-  if (artiExtraCpu > 0) {
-    artiComp.cpu    += artiExtraCpu;
-    artiComp.memGB  += artiExtraMem;
-  }
-  components.push(artiComp);
-
-  /* --- Nginx (only when bundled, or explicitly kept behind an external LB) --- */
-  if (provisionNginx) {
-    components.push(buildRow("nginx", "Nginx (reverse proxy / TLS)", {
-      storage: { gb: 50, iops: 3000, mbps: 200 },
-      note: externalLB
-        ? `Dedicated VM per replica, sitting behind the ${lbDisplay}.`
-        : "Dedicated VM per replica (JFrog rule). Acts as the reverse proxy / TLS terminator."
-    }));
-  }
-
-  /* --- Xray + RabbitMQ (Xray DB is sized in the consolidated database block below) --- */
-  let externalRmqSpec = null;
-  if (xrayEnabled) {
-    // On K8s, JAS is a feature flag inside Xray (extraSystemYaml.jas.enabled: true) — no separate
-    // JAS node pool. Add JAS resource overhead directly to each Xray replica.
-    let xrayName = "Xray";
-    let xrayExtraCpu = 0, xrayExtraMemGB = 0, xrayExtraDiskGB = 0;
-    let xrayNote = "Dedicated VM per replica. Index time scales with artifact count.";
-    if (svc.jas && deployment === "k8s") {
-      const jasCpu    = xrayArtifacts <= 100000 ? 6 : 8;
-      const jasMemGB  = 24;
-      const jasDiskGB = xrayArtifacts <= 100000 ? 500 : 300;
-      xrayExtraCpu    = jasCpu;
-      xrayExtraMemGB  = jasMemGB;
-      xrayExtraDiskGB = jasDiskGB;
-      xrayName = "Xray + JAS";
-      xrayNote = `JAS runs inside the Xray pod (extraSystemYaml.jas.enabled: true) — no separate JAS node pool on K8s. JAS overhead per replica: +${jasCpu} ${cpuLabel} / +${jasMemGB} GB RAM / +${jasDiskGB} GB disk. Ephemeral scanner jobs (exposuresscannersjob etc.) need additional node headroom — see Notes &amp; warnings.`;
-    }
-    const xrayBaseArch = arch.xray[tier];
-    const xrayBaseStor = STORAGE.xray[tier];
-    const xrayRow = buildRow("xray", xrayName, {
-      storage: { gb: xrayBaseStor.gb + xrayExtraDiskGB, iops: xrayBaseStor.iops, mbps: xrayBaseStor.mbps },
-      note: xrayNote
-    });
-    if (xrayExtraCpu > 0) {
-      xrayRow.cpu   = xrayBaseArch.cpu   + xrayExtraCpu;
-      xrayRow.memGB = xrayBaseArch.memGB + xrayExtraMemGB;
-    }
-    components.push(xrayRow);
-    // RabbitMQ must be deployed in odd-numbered clusters (quorum queues need majority consensus).
-    // Single node (1) is acceptable for non-HA small deployments; any cluster ≥ 2 must be rounded up to the next odd number.
-    const oddify = n => (n <= 1 ? n : (n % 2 === 0 ? n + 1 : n));
-    const rmqBase     = ha ? REPLICAS.rabbitmq[tier] : (xrayArtifacts > 100000 ? 3 : 1);
-    const rmqReplicas = oddify(rmqBase);
-    const rmqArch     = arch.rabbitmq[tier];
-    const rmqStor     = STORAGE.rabbitmq[tier];
-    const quorumNote  = rmqReplicas >= 3
-      ? `Odd node count (${rmqReplicas}) enforced for quorum — tolerates ${(rmqReplicas - 1) / 2} node failure${(rmqReplicas - 1) / 2 === 1 ? "" : "s"}.`
-      : "Single-node mode — no quorum / no failure tolerance.";
-    if (externalRMQ) {
-      externalRmqSpec = {
-        replicas: rmqReplicas, instance: rmqArch.instance, cpu: rmqArch.cpu, memGB: rmqArch.memGB,
-        diskGB: rmqStor.gb, iops: rmqStor.iops, mbps: rmqStor.mbps, quorumNote
-      };
-    } else {
-      const splitNote   = xrayArtifacts > 100000 || ha
-        ? "Split mode — RabbitMQ on separate VMs from Xray (JFrog HA rule)."
-        : "Co-located permitted at ≤100K artifacts (still split here for safety).";
-      components.push(buildRow("rabbitmq", "RabbitMQ (Xray)", {
-        forceReplicas: rmqReplicas,
-        note: `${splitNote} ${quorumNote}`
-      }));
-    }
-  }
-
-  /* --- JAS (Advanced Security) --- */
-  // VMs: JAS requires dedicated separate servers (JFrog JAS prerequisites table).
-  // K8s: JAS runs within the Xray Helm chart via xray.jas.enabled — no separate node pool.
-  if (svc.jas && xrayEnabled) {
-    let jasNodes, jasCpu, jasMemGB, jasDiskGB;
-    if (xrayArtifacts <= 100000) {
-      jasNodes = 1; jasCpu = 6; jasMemGB = 24; jasDiskGB = 500;
-    } else if (xrayArtifacts <= 1000000) {
-      jasNodes = 2; jasCpu = 8; jasMemGB = 24; jasDiskGB = 300;
-    } else if (xrayArtifacts <= 2000000) {
-      jasNodes = 4; jasCpu = 8; jasMemGB = 24; jasDiskGB = 300;
-    } else {
-      jasNodes = 8; jasCpu = 8; jasMemGB = 24; jasDiskGB = 300;
-    }
-    if (deployment === "vm") {
-      // On VMs, JAS needs its own dedicated server(s) separate from Xray.
-      components.push({
-        name: "JAS (Advanced Security)",
-        replicas: jasNodes,
-        instance: arch.jas[tier].instance,
-        cpu: jasCpu,
-        memGB: jasMemGB,
-        diskGB: jasDiskGB,
-        iops: 3000,
-        mbps: 500,
-        note: `JFrog JAS prerequisites: ${jasNodes} dedicated server${jasNodes > 1 ? "s" : ""} for ${xrayArtifacts.toLocaleString()} indexed artifacts (${jasCpu} ${cpuLabel} / ${jasMemGB} GB RAM / ${jasDiskGB} GB SSD @ 3K IOPS). JAS modules run alongside Xray but on dedicated hosts.`
-      });
-    }
-    // K8s: no separate component — JAS is enabled inside the Xray chart (xray.jas.enabled: true).
-    // Ephemeral scan jobs run on the Xray node pool (or a tainted sub-pool via xray.jas.executionService).
-  } else if (svc.jas && !xrayEnabled) {
-    // JAS requires Xray — silently ignore if Xray disabled (warning shown elsewhere).
-  }
-
-  /* --- Optional services from hardware sizing matrix --- */
-  if (svc.workers) {
-    components.push({
-      name: "Workers",
-      replicas: ha ? 2 : 1,
-      instance: arch.nginx[tier].instance, // small footprint - use nginx-class VM as a proxy
-      cpu: 4, memGB: 4, diskGB: 50, iops: 3000, mbps: 200,
-      note: "Hardware sizing matrix: 4 CPU / 4 GB / 50 GB. Requires Artifactory ≥ 7.98.4."
-    });
-  }
-  // AppTrust + UnifiedPolicy on K8s: separate pods that share the Artifactory node pool.
-  // Re-add them as components with the Artifactory instance type so k8sPlan() groups them
-  // into the same pool and the cluster capacity calculation includes their pod resource limits.
-  // On VMs, the overhead was already added directly to artiComp.cpu / artiComp.memGB above.
-  if (svc.appTrust && deployment === "k8s") {
-    const atReplicas = ha ? 2 : 1;
-    components.push({
-      name: "AppTrust",
-      replicas: atReplicas,
-      instance: arch.artifactory[tier].instance,
-      cpu: 1, memGB: 2, diskGB: 0, iops: 0, mbps: 0,
-      note: `Separate pod on the Artifactory node pool — no dedicated pool. Pod limits: 1 ${cpuLabel} / 2 GB.`
-    });
-    components.push({
-      name: "UnifiedPolicy",
-      replicas: atReplicas,
-      instance: arch.artifactory[tier].instance,
-      cpu: 1, memGB: 1, diskGB: 0, iops: 0, mbps: 0,
-      note: `Separate pod on the Artifactory node pool — no dedicated pool. Pod limits: 0.5 ${cpuLabel} / 1 GB.`
-    });
-  }
-  // Distribution on K8s: separate StatefulSet with its own PVC — NOT tied to the
-  // Artifactory node pool. Uses a general-purpose (nginx-class) node.
-  // On VMs, the overhead was added to artiComp.cpu / artiComp.memGB above.
-  if (svc.distribution && deployment === "k8s") {
-    const distReplicas = ha ? 2 : 1;
-    const distDisk = ha ? 20 : 5;
-    components.push({
-      name: "Distribution",
-      replicas: distReplicas,
-      instance: arch.nginx[tier].instance,
-      cpu: 1, memGB: 2, diskGB: distDisk, iops: 3000, mbps: 200,
-      note: `Separate StatefulSet pod — own PVC (${distDisk} GB per replica). Pod limits: 1 ${cpuLabel} / 2 GB.`
-    });
-  }
-
-  // Mission Control is bundled into Artifactory (a platform service on the
-  // Artifactory router) — no standalone node and no separate database. The
-  // selection only flips on the UI integration (artifactory.mc.enabled in Helm).
-
-  /* --- Curation + Catalog (+ Catalog DB, + Valkey co-located or external) ---
-     Curation is a runtime feature of Artifactory + Xray — no dedicated pod/VM.
-     It is enabled via system.yaml flags (extraSystemYaml in Helm). The only new
-     infrastructure is the Catalog service (standalone pod/VM) and Valkey (cache). */
-  let externalValkeySpec = null;
-  if (svc.curation) {
-    const proxyVM = arch.nginx[tier].instance;
-    let catalogMem  = 16;
-    let catalogNote = "Catalog service — metadata store for Curation. Curation itself runs as a feature inside the existing Artifactory + Xray pods (no additional VMs/pods).";
-    if (!externalValkey) { catalogMem += 8; catalogNote += " Valkey co-located on the Catalog nodes (+8 GB RAM, no new VMs)."; }
-    components.push({
-      name: "Catalog",
-      replicas: ha ? 2 : 1,
-      instance: proxyVM,
-      cpu: 8, memGB: catalogMem, diskGB: 100, iops: 3000, mbps: 500,
-      note: catalogNote
-    });
-    if (externalValkey) {
-      externalValkeySpec = { replicas: ha ? 3 : 1, instance: proxyVM, cpu: 2, memGB: 8, diskGB: 20, iops: 3000, mbps: 200 };
-    }
-  }
-
-  /* --- Runtime Security (separate jfrog/runtime release + per-node sensor DaemonSet) --- */
-  if (svc.runtime) {
-    components.push({
-      name: "Runtime (server)",
-      replicas: ha ? 2 : 1,
-      instance: arch.nginx[tier].instance,
-      cpu: 2, memGB: 4, diskGB: 50, iops: 3000, mbps: 200,
-      note: "JFrog Runtime server (separate jfrog/runtime release). Uses its own 'runtime' database. Sensors run as a per-node DaemonSet (no dedicated nodes)."
-    });
-  }
-
-  /* --- Databases: one logical DB per product, hosted on a single shared instance
-         (default) or a dedicated instance per product (dbInstances). --- */
-  const dbProducts = [];
-  {
-    const adb = arch.artifactoryDb[tier], adbStor = STORAGE.artifactoryDb[tier];
-    dbProducts.push({ label:"Artifactory", db:"artifactory", user:"artifactory", cpu:adb.cpu, memGB:adb.memGB,
-      instance:adb.instance, maxConns:adb.maxConns, diskGB:Math.max(100, Math.round(binaryTB*1024*adbStor.frac)), iops:adbStor.iops, mbps:adbStor.mbps });
-    if (xrayEnabled) {
-      const xdb = arch.xrayDb[tier], xdbStor = STORAGE.xrayDb[tier];
-      dbProducts.push({ label:"Xray", db:"xraydb", user:"xray", cpu:xdb.cpu, memGB:xdb.memGB, instance:xdb.instance, maxConns:xdb.maxConns, diskGB:xdbStor.gb, iops:xdbStor.iops, mbps:xdbStor.mbps });
-    }
-    const sdb = arch.xrayDb.small; // small managed-DB SKU for the lighter services
-    if (svc.distribution) dbProducts.push({ label:"Distribution", db:"distribution", user:"distribution", cpu:sdb.cpu, memGB:sdb.memGB, instance:sdb.instance, maxConns:sdb.maxConns, diskGB:100, iops:4000, mbps:500 });
-    if (svc.curation)     dbProducts.push({ label:"Catalog", db:"catalogdb", user:"catalog", cpu:sdb.cpu, memGB:sdb.memGB, instance:sdb.instance, maxConns:sdb.maxConns, diskGB:200, iops:4000, mbps:500 });
-    if (svc.runtime)      dbProducts.push({ label:"Runtime", db:"runtime", user:"runtime", cpu:sdb.cpu, memGB:sdb.memGB, instance:sdb.instance, maxConns:sdb.maxConns, diskGB:50, iops:4000, mbps:500 });
-  }
-  const dbReplicas = dbMode === "colocated" && ha ? 2 : 1;            // primary + standby for self-run HA
-  const dbTotalConns = dbProducts.reduce((s, d) => s + d.maxConns, 0);
-  if (dbInstances === "dedicated" && dbProducts.length > 1) {
-    dbProducts.forEach(d => components.push({
-      name: `PostgreSQL (${d.label} DB)`, replicas: dbReplicas,
-      instance: dbMode === "external" ? d.instance : `Co-located ${d.cpu} ${cpuLabel} / ${d.memGB} GB`,
-      cpu: d.cpu, memGB: d.memGB, diskGB: d.diskGB, iops: d.iops, mbps: d.mbps,
-      note: `${dbMode === "external" ? `External managed RDBMS (max ${d.maxConns} conns)` : "Co-located"} — dedicated instance for the ${d.label} database (${d.db}).${dbReplicas > 1 ? " Primary+standby for HA." : ""}`
-    }));
-  } else {
-    // Shared: one instance hosting all databases — sized to the dominant (Artifactory)
-    // DB, disk = sum of all DBs, max_connections ≥ sum across products.
-    const big = dbProducts[0]; // Artifactory DB is the largest/dominant
-    const sumDisk = dbProducts.reduce((s, d) => s + d.diskGB, 0);
-    components.push({
-      name: "PostgreSQL (shared)", replicas: dbReplicas,
-      instance: dbMode === "external" ? big.instance : `Co-located ${big.cpu} ${cpuLabel} / ${big.memGB} GB`,
-      cpu: big.cpu, memGB: big.memGB, diskGB: sumDisk, iops: big.iops, mbps: big.mbps,
-      note: `${dbMode === "external" ? "External managed RDBMS" : "Co-located"} — single instance hosting ${dbProducts.length} database${dbProducts.length === 1 ? "" : "s"} (${dbProducts.map(d => d.db).join(", ")}). Sized to the dominant (Artifactory) DB; set max_connections ≥ ${dbTotalConns}.${dbReplicas > 1 ? " Primary+standby for HA." : ""}`
-    });
-  }
-
-  /* --- Compute totals for the active cluster --- */
-  function totalsOf(comps) {
-    let cpu = 0, mem = 0, disk = 0, nodes = 0;
-    comps.forEach(c => {
-      c.totalCPU  = c.cpu * c.replicas;
-      c.totalMem  = c.memGB * c.replicas;
-      c.totalDisk = c.diskGB * c.replicas;
-      cpu += c.totalCPU; mem += c.totalMem; disk += c.totalDisk; nodes += c.replicas;
-    });
-    return { cpu, mem, disk, nodes };
-  }
-  const activeTotals = totalsOf(components);
-
-  /* --- Build the second site for a multi-site topology (Active-Passive or Active-Active) --- */
-  let passiveComponents = null;   // "the second site" (passive in A/P, the other active site in A/A)
-  let passiveTotals     = null;
-  if (topology === "active-passive" || topology === "active-active") {
-    const aa = topology === "active-active";
-    // Deep-copy components. Active-Active: a full active mirror (both sites serve traffic).
-    // Active-Passive: Hot = identical; Warm = 1 replica per component (RabbitMQ rounded to 3 for quorum), DB at full sizing.
-    passiveComponents = components.map(c => {
-      const copy = { ...c };
-      if (aa) {
-        copy.note = `Active site B — ${copy.note}`;
-      } else if (passiveScale === "warm") {
-        if (c.name === "RabbitMQ (Xray)") {
-          copy.replicas = c.replicas >= 3 ? 3 : 1; // keep quorum-capable
-        } else if (c.name.startsWith("PostgreSQL")) {
-          copy.replicas = c.replicas; // keep DB at full sizing for fast failover (still 1 in managed, 2 if self-HA)
-        } else {
-          copy.replicas = 1;
-        }
-        copy.note = `Warm standby — ${copy.note}`;
-      } else {
-        copy.note = `Active-Standby — ${copy.note}`;
+    if (isMulti) {
+      resilienceOverride = sizingBias === "resilience" && topology === "active-passive" && passiveScale === "warm";
+      passiveComponents = buildPassiveFromActive(components, { topology, passiveScale, resilienceOverride });
+      passiveTotals = totalsOf(passiveComponents);
+      const passArti = passiveComponents.find(c => c.name === "Artifactory");
+      effectivePassiveNodes = passArti ? passArti.replicas : 0;
+      if (passiveComponents.length && topology === "active-active") {
+        passiveTier = tier;
+      } else if (passArti) {
+        passiveTier = tierFromArtiReplicas(passArti.replicas, ha);
       }
-      return copy;
+    }
+  } else {
+    let alloc = allocateLicenses({
+      total: licensePurchased, topology, passiveScale, splitMode: licenseSplit, licensePrimary: licensePrimaryInput
     });
-    passiveTotals = totalsOf(passiveComponents);
+    alloc = applySizingBias(alloc, sizingBias, baseline, { topology, passiveScale });
+    licenseAllocation = alloc;
+
+    const snapPrimary = snapArtiReplicas(alloc.primary, ha);
+    const snapSecondary = snapArtiReplicas(alloc.secondary, ha);
+    if (snapPrimary.snapped) licenseSnapWarnings.push(`Primary site: ${snapPrimary.requested} licenses snapped to ${snapPrimary.nodes} nodes (published HA counts: 1/2/3/4/6).`);
+    if (snapSecondary.snapped && alloc.secondary > 0) licenseSnapWarnings.push(`Secondary site: ${snapSecondary.requested} licenses snapped to ${snapSecondary.nodes} nodes.`);
+
+    tier = tierFromArtiReplicas(snapPrimary.nodes, ha);
+    tierMeta = TIER_RPM[tier];
+    effectiveActiveNodes = ha ? snapPrimary.nodes : 1;
+    effectivePassiveNodes = alloc.secondary > 0 ? (ha ? snapSecondary.nodes : 1) : 0;
+
+    const activeSite = buildSiteComponents({ ...siteCtxBase, tier, artiReplicas: effectiveActiveNodes });
+    components = activeSite.components;
+    dbProducts = activeSite.dbProducts;
+    externalRmqSpec = activeSite.externalRmqSpec;
+    externalValkeySpec = activeSite.externalValkeySpec;
+    artiDbMaxConns = activeSite.artiDbMaxConns;
+    xrayDbMaxConns = activeSite.xrayDbMaxConns;
+    dbTotalConns = activeSite.dbTotalConns;
+
+    if (isMulti && alloc.secondary > 0) {
+      passiveTier = tierFromArtiReplicas(effectivePassiveNodes, ha);
+      const passiveSite = buildSiteComponents({
+        ...siteCtxBase, tier: passiveTier, artiReplicas: effectivePassiveNodes,
+        siteNotePrefix: topology === "active-active" ? "Active site B" : (passiveScale === "warm" ? "Warm standby" : "Active-Standby")
+      });
+      passiveComponents = passiveSite.components;
+      passiveTotals = totalsOf(passiveComponents);
+    }
   }
+
+  const activeTotals = totalsOf(components);
+  const biasDelta = compareEffectiveToBaseline(
+    { activeTier: tier, passiveTier, activeNodes: effectiveActiveNodes, passiveNodes: effectivePassiveNodes },
+    baseline,
+    { sizingBias, licenseMode }
+  );
 
   const binaryStorageTarget = STORAGE_CLASS[cloud].object;
 
   render({
     cloud, cloudLabel, deployment, ha, dbMode, dbInstances, k8sPlacement, topology, passiveScale,
-    tier, tierMeta, connsTier, rpmTierKey,
+    tier, tierMeta, connsTier, rpmTierKey, loadTier, baseline,
     activeClients, rpm, binaryTB,
     growthPct, activeClientsInput, rpmInput, binaryTBInput, xrayArtifactsInput,
     cacheFs, cacheFsPct, cacheFsGB,
@@ -2328,9 +2422,11 @@ function calculate() {
     artiDbMaxConns, xrayDbMaxConns, dbProducts, dbTotalConns,
     xrayArtifacts, xrayEnabled, svc,
     components, activeTotals,
-    passiveComponents, passiveTotals,
+    passiveComponents, passiveTotals, passiveTier,
     binaryStorageTarget,
-    infraType, cpuLabel
+    infraType, cpuLabel,
+    sizingBias, licenseMode, licensePurchased, licenseSplit, licenseAllocation,
+    biasDelta, licenseSnapWarnings, resilienceOverride
   });
 }
 
@@ -2450,11 +2546,13 @@ function licenseCount(r) {
   const arti = findComp(r, "Artifactory");
   const active  = arti ? arti.replicas : 1;
   const passive = (r.passiveComponents || []).filter(c => c.name === "Artifactory").reduce((s, c) => s + c.replicas, 0);
+  const total = active + passive;
+  const purchased = r.licenseMode ? r.licensePurchased : null;
+  const unused = purchased != null ? Math.max(0, purchased - total) : 0;
   return {
     tier:    licenseEffectiveTier(r),
-    active,
-    passive,
-    total:   active + passive,
+    active, passive, total,
+    purchased, unused,
     jas:     !!r.svc.jas,
     edge:    !!r.svc.distribution
   };
@@ -2591,6 +2689,13 @@ function buildLicensePanel(r) {
     return `<tr><td><strong>${it.name}</strong></td><td><span class="chip ${cls}">${it.tier}</span></td><td><span class="hint">${it.note}</span></td></tr>`;
   }).join("");
 
+  const purchasedNote = r.licenseMode && lic.purchased != null
+    ? ` Purchased: <strong>${lic.purchased}</strong>${lic.unused > 0 ? ` (${lic.unused} unused)` : ""}.`
+    : "";
+  const baselineNote = r.baseline
+    ? ` Load baseline: <strong>${TIER_LABEL[r.baseline.tier]}</strong> (${r.baseline.activeNodes}${r.baseline.passiveNodes ? ` + ${r.baseline.passiveNodes}` : ""} node${r.baseline.totalLicenses === 1 ? "" : "s"}).`
+    : "";
+
   return `
     <details class="panel">
       <summary style="font-size:14px;">Licensing — minimum subscription: ${effective} · ${totalArti} Artifactory license${totalArti === 1 ? "" : "s"}</summary>
@@ -2600,9 +2705,12 @@ function buildLicensePanel(r) {
         One subscription licenses the whole JFrog Platform Site — Xray, Distribution, Mission Control, etc. are entitlements within that tier, not separately-licensed servers.
       </div>
       <div class="notice ${effClass}" style="margin-top:10px;">
-        <strong>Licenses needed for this configuration: ${totalArti} Artifactory node license${totalArti === 1 ? "" : "s"}${splitNote}.</strong>
+        <strong>Artifactory licenses deployed: ${totalArti} node license${totalArti === 1 ? "" : "s"}${splitNote}.</strong>${purchasedNote}
         The platform is licensed per Artifactory node — one license per HA node, per site.${lic.edge ? " Distribution Edge nodes carry their own <strong>Edge licenses</strong> (counted separately)." : ""}
       </div>
+      ${baselineNote ? `<div class="hint" style="margin-top:8px;">${baselineNote}</div>` : ""}
+      ${r.biasDelta && r.biasDelta.isOverBaseline ? `<div class="notice info" style="margin-top:10px;"><strong>Sized above load baseline</strong> — effective sizing exceeds what projected load alone requires.${r.sizingBias !== "normal" ? ` ${r.sizingBias === "performance" ? "Performance" : "Resilience"} bias applied.` : ""}</div>` : ""}
+      ${r.biasDelta && r.biasDelta.isUnderBaseline ? `<div class="notice warn" style="margin-top:10px;"><strong>Sized below load baseline</strong> — ${r.licenseMode ? "purchased licenses" : "current settings"} provide fewer Artifactory nodes than projected load implies (${TIER_LABEL[r.loadTier]}). Capacity may be insufficient.</div>` : ""}
       <table>
         <thead><tr><th>Product / capability</th><th>Min. subscription</th><th>Notes</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -2652,13 +2760,19 @@ function render(r) {
       <div style="margin-top:14px;">
         <span class="chip">${r.activeClients.toLocaleString()} concurrent conns → ${TIER_LABEL[r.connsTier]}</span>
         <span class="chip">${r.rpm.toLocaleString()} RPM → ${TIER_LABEL[r.rpmTierKey]}</span>
-        <span class="chip warn">Effective tier: ${tierName} (max of both)</span>
+        <span class="chip">Load baseline: ${TIER_LABEL[r.loadTier]}</span>
+        <span class="chip warn">Effective tier: ${tierName}${r.licenseMode ? " (license-driven)" : r.sizingBias !== "normal" ? ` (${r.sizingBias} bias)` : ""}</span>
         ${r.xrayEnabled ? `<span class="chip">Xray ${r.xrayArtifacts.toLocaleString()} indexed</span>` : `<span class="chip">No Xray</span>`}
         ${r.growthPct > 0 ? `<span class="chip warn">+${r.growthPct}% growth headroom</span>` : ""}
         ${r.cacheFsGB > 0 ? `<span class="chip ok">Cache-fs ${fmtGB(r.cacheFsGB)}/node</span>` : ""}
       </div>
       <div style="margin-top:10px;">
         <span class="chip ok">${r.ha ? "HA enabled" : "Single replica"}</span>
+        <span class="chip">${r.sizingBias === "performance" ? "Performance bias" : r.sizingBias === "resilience" ? "Resilience bias" : "Normal sizing"}</span>
+        ${r.licenseMode ? `<span class="chip ok">${r.licensePurchased} licenses purchased</span>` : `<span class="chip">Licenses: auto (from load)</span>`}
+        ${r.licenseMode && r.licenseAllocation && r.licenseAllocation.secondary > 0 ? `<span class="chip">${r.licenseAllocation.primary} + ${r.licenseAllocation.secondary} split</span>` : ""}
+        ${r.biasDelta && r.biasDelta.isOverBaseline ? `<span class="chip ok">Above load baseline</span>` : ""}
+        ${r.biasDelta && r.biasDelta.isUnderBaseline ? `<span class="chip warn">Below load baseline</span>` : ""}
         <span class="chip ok">Placement: ${placement}</span>
         <span class="chip ok">LB: ${r.lbDisplay}</span>
         ${r.externalLB && !r.provisionNginx ? `<span class="chip warn">No Nginx tier</span>` : ""}
@@ -2672,13 +2786,36 @@ function render(r) {
       <div class="notice info" style="margin-top:12px;">
         <strong>Sized for ${r.growthPct}% projected growth.</strong>
         Binary storage: ${r.binaryTBInput} TB → <strong>${r.binaryTB} TB</strong>.
-        Tier and replica counts reflect the projected load after growth is applied.
+        Load baseline tier is ${TIER_LABEL[r.loadTier]}; effective tier and replica counts follow ${r.licenseMode ? "purchased license allocation" : r.sizingBias !== "normal" ? `${r.sizingBias} bias` : "projected load"}.
+      </div>` : ""}
+      ${r.biasDelta && (r.biasDelta.isOverBaseline || r.biasDelta.isUnderBaseline) ? `
+      <div class="notice ${r.biasDelta.isUnderBaseline ? "warn" : "info"}" style="margin-top:12px;">
+        <strong>${r.biasDelta.isUnderBaseline ? "Under" : "Over"}-allocated vs load baseline.</strong>
+        ${r.biasDelta.tierDelta !== 0 ? ` Tier: ${TIER_LABEL[r.baseline.tier]} → ${tierName} (${r.biasDelta.tierDelta > 0 ? "+" : ""}${r.biasDelta.tierDelta} step${Math.abs(r.biasDelta.tierDelta) === 1 ? "" : "s"}).` : ""}
+        ${r.biasDelta.activeNodeDelta !== 0 ? ` Primary site: ${r.baseline.activeNodes} → ${licenseCount(r).active} Artifactory node${licenseCount(r).active === 1 ? "" : "s"}.` : ""}
+        ${r.biasDelta.passiveNodeDelta !== 0 ? ` Secondary site: ${r.baseline.passiveNodes} → ${licenseCount(r).passive} Artifactory node${licenseCount(r).passive === 1 ? "" : "s"}.` : ""}
+        ${r.sizingBias !== "normal" ? ` ${r.sizingBias === "performance" ? "Performance" : "Resilience"} bias influenced this recommendation.` : ""}
       </div>` : ""}
     </div>
   `;
 
   /* Warnings */
   const warnings = [];
+  if (r.licenseMode && TIER_ORDER.indexOf(r.loadTier) > TIER_ORDER.indexOf(r.tier)) {
+    warnings.push({type:"warn", text:`<strong>License capacity:</strong> projected load implies <strong>${TIER_LABEL[r.loadTier]}</strong> (${r.baseline.activeNodes} Artifactory node${r.baseline.activeNodes === 1 ? "" : "s"} per site) but purchased licenses size to <strong>${tierName}</strong>. Consider additional licenses or reduced load projections.`});
+  }
+  if (r.licenseSnapWarnings && r.licenseSnapWarnings.length) {
+    r.licenseSnapWarnings.forEach(msg => warnings.push({type:"warn", text: msg}));
+  }
+  if (r.licenseMode && isMulti && r.licensePurchased < 2) {
+    warnings.push({type:"danger", text:"Multi-site topology requires at least 2 Artifactory licenses (one per site minimum)."});
+  }
+  if (r.resilienceOverride) {
+    warnings.push({type:"info", text:"<strong>Resilience bias:</strong> passive site sized at full mirror replica counts despite Warm Standby topology selection — this is a sizing recommendation for failover headroom, not a change to your topology input."});
+  }
+  if (!r.licenseMode && r.sizingBias === "performance" && r.tier !== r.loadTier) {
+    warnings.push({type:"info", text:`<strong>Performance bias:</strong> sized one tier above load baseline (${TIER_LABEL[r.loadTier]} → <strong>${tierName}</strong>).`});
+  }
   if (r.activeClients > 6000)            warnings.push({type:"danger", text:"Concurrent connections exceed 6,000 (2XLarge tier ceiling) — contact JFrog Support for custom Enterprise+ sizing."});
   if (r.rpm > 500000)                    warnings.push({type:"danger", text:"RPM exceeds published 2XLarge tier (500K). Custom sizing required."});
   if (r.xrayArtifacts > 10000000)        warnings.push({type:"danger", text:"Indexed artifacts exceed 10M — contact JFrog Support."});
@@ -3182,12 +3319,13 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
   html += `
     <details>
       <summary>Node count formula — how the tier and replica counts are derived</summary>
-      <p style="margin-top:10px;"><strong>Step 1 — classify each input into a tier:</strong></p>
+      <p style="margin-top:10px;"><strong>Step 1 — load baseline tier:</strong> classify concurrent connections and RPM independently, then take <code>max(connections tier, RPM tier)</code>. This is always computed as the reference baseline.</p>
+      <p style="margin-top:8px;"><strong>Step 2 — effective sizing mode:</strong></p>
       <ul style="margin:4px 0 10px; padding-left:20px; font-size:13px; line-height:1.8;">
-        <li><strong>Concurrent Connections tier</strong>: classify the peak concurrent HTTP connections against the reference architecture thresholds.</li>
-        <li><strong>RPM tier</strong>: classify the peak requests-per-minute against the reference architecture thresholds.</li>
+        <li><strong>No license entered:</strong> effective tier = load baseline (Normal bias), or +1 tier (Performance bias), or full passive mirror (Resilience bias on warm A/P).</li>
+        <li><strong>License entered:</strong> licenses are split across sites (balanced, custom, or warm-fixed), optionally skewed by bias, then mapped to per-site Artifactory node counts (1/2/3/4/6). Each site's tier and all component specs cascade from that site's node count.</li>
       </ul>
-      <p><strong>Step 2 — effective tier</strong> = <code>max(Concurrent Connections tier, RPM tier)</code>. The higher of the two drives the sizing, so whichever dimension is more demanding governs.</p>
+      <p><strong>Step 3 — compare to baseline:</strong> effective sizing is highlighted when it over- or under-allocates vs the load baseline.</p>
       <p style="margin-top:10px;"><strong>Tier thresholds and replica counts (HA mode)</strong>:</p>
       <table style="margin-top:6px;">
         <thead>
@@ -3216,7 +3354,8 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
       </table>
       <div class="notice info" style="margin-top:10px;">
         <strong>Current inputs:</strong> ${r.activeClients.toLocaleString()} concurrent connections (→ <strong>${TIER_LABEL[r.connsTier]}</strong>) &nbsp;·&nbsp; ${r.rpm.toLocaleString()} RPM (→ <strong>${TIER_LABEL[r.rpmTierKey]}</strong>)<br>
-        <strong>Effective tier: ${tierName}</strong>${r.ha ? ` → <strong>${REPLICAS.artifactory[r.tier]} Artifactory node${REPLICAS.artifactory[r.tier] > 1 ? "s" : ""}</strong>` : " → <strong>1 Artifactory node</strong> (HA disabled)"}.
+        <strong>Load baseline: ${TIER_LABEL[r.loadTier]}</strong> &nbsp;·&nbsp; <strong>Effective tier: ${tierName}</strong>${r.ha ? ` → <strong>${findComp(r, "Artifactory")?.replicas || 1} Artifactory node${(findComp(r, "Artifactory")?.replicas || 1) > 1 ? "s" : ""}</strong> (primary site)` : " → <strong>1 Artifactory node</strong> (HA disabled)"}.
+        ${r.licenseMode ? `<br>Sized from <strong>${r.licensePurchased} purchased license${r.licensePurchased === 1 ? "" : "s"}</strong>${r.licenseAllocation && r.licenseAllocation.secondary > 0 ? ` (${r.licenseAllocation.primary} + ${r.licenseAllocation.secondary} split)` : ""}.` : ""}
         ${REPLICAS.artifactory[r.tier] < 4 ? "<br>To reach <strong>4 Artifactory nodes</strong> (XLarge tier), set Concurrent Connections &gt; 1,200 or RPM &gt; 100,000." : ""}
       </div>
       <ul style="margin:10px 0 4px; padding-left:20px; font-size:13px; line-height:1.8;">
@@ -3232,7 +3371,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
   html += `
     <details style="--link-color:#6dd4a0;">
       <summary>How these numbers are derived</summary>
-      <p><strong>Effective tier</strong> = max of two inputs: concurrent connections tier (reference architecture: ≤100 Small, ≤500 Medium, ≤1,200 Large, ≤3,000 XLarge, ≤6,000 2XLarge) and RPM tier (≤6K Small, ≤50K Medium, ≤100K Large, ≤200K XLarge, ≤500K 2XLarge).</p>
+      <p><strong>Load baseline tier</strong> = max of concurrent connections tier and RPM tier. When no license is entered, effective tier follows the baseline (with optional Performance/Resilience bias). When licenses are entered, per-site Artifactory node counts drive the effective tier and cascade to all component specs.</p>
       <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/" target="_blank">reference architecture pages</a>. Replicas by tier — Artifactory 1/2/3/4/6, Nginx and Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3. <strong>JAS</strong> deployment differs by model: on <em>VMs</em>, JAS requires dedicated servers scaled by artifact volume — 1 node (≤100K, 6 vCPU/24 GB/500 GB), 2 nodes (≤1M, 8 vCPU/24 GB/300 GB), 4 nodes (≤2M), 8 nodes (≤10M) per the <a href="https://docs.jfrog.com/installation/docs/jfrog-advanced-security-prerequisites" target="_blank">JAS prerequisites table</a>. On <em>Kubernetes</em>, JAS runs within the Xray Helm chart (xray.jas.enabled: true) — no separate node pool; ephemeral scan jobs run on the Xray pool or a tainted sub-pool.</p>
       <p><strong>Storage sizing</strong> (disk, IOPS, throughput) is from the <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/storage/" target="_blank">JFrog storage specification page</a>: Artifactory 500→1000 GB, Xray 100→200 GB, RabbitMQ 100 GB, JAS 300 GB; Artifactory DB = 1/3 of filestore at 4K–20K IOPS; Xray DB 500–2500 GB at 4K–12K IOPS.</p>
       <p><strong>Co-location (VMs)</strong>: On VMs, Distribution co-locates on each Artifactory host (+2 vCPU / +2 GB / +200 GB per node — those numbers are added to the Artifactory row). AppTrust + UnifiedPolicy also co-locate on Artifactory VMs (+4 vCPU / +2 GB / +100 GB per node). Artifactory, Nginx, and Xray each require a dedicated VM per replica. JAS on VMs requires dedicated servers separate from Xray. RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts.</p>
