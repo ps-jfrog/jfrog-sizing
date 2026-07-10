@@ -73,20 +73,37 @@ function computeBaseline({ loadTier, ha, topology, passiveScale }) {
   else if (topology === "active-passive") passiveNodes = passiveScale === "warm" ? 1 : activeNodes;
   return { tier: loadTier, activeNodes, passiveNodes, totalLicenses: activeNodes + passiveNodes };
 }
-function allocateLicenses({ total, topology, passiveScale, splitMode, licensePrimary }) {
+function allocateLicenses({ total, topology, passiveScale, licensePrimary, licenseSecondary, ha }) {
   if (topology === "single") return { primary: total, secondary: 0, splitMode: "single" };
+  if (!ha) {
+    const isWarm = topology === "active-passive" && passiveScale === "warm";
+    if (isWarm) return { primary: Math.max(0, total - 1), secondary: Math.min(1, total), splitMode: "warm" };
+    const primary = Math.ceil(total / 2);
+    return { primary, secondary: total - primary, splitMode: "single-replica-multi" };
+  }
   const isWarm = topology === "active-passive" && passiveScale === "warm";
   if (isWarm) return { primary: Math.max(0, total - 1), secondary: Math.min(1, total), splitMode: "warm" };
-  if (splitMode === "custom") {
-    const primary = Math.max(1, Math.min(total - 1, licensePrimary || Math.ceil(total / 2)));
-    return { primary, secondary: total - primary, splitMode: "custom" };
+  const p = Number.isFinite(licensePrimary) ? licensePrimary : Math.ceil(total / 2);
+  const s = Number.isFinite(licenseSecondary) ? licenseSecondary : (total - p);
+  if (p + s === total && p >= 1 && s >= 1) {
+    return { primary: p, secondary: s, splitMode: "allocated" };
+  }
+  const primary = Math.max(1, Math.min(total - 1, p));
+  return { primary, secondary: total - primary, splitMode: "allocated" };
+}
+function licenseSplitContextKey(total, topology, passiveScale, ha) {
+  return `${total}|${topology}|${passiveScale}|${ha}`;
+}
+function defaultLicenseSplit(total, topology, passiveScale) {
+  if (topology === "active-passive" && passiveScale === "warm") {
+    return { primary: Math.max(0, total - 1), secondary: Math.min(1, total) };
   }
   const primary = Math.ceil(total / 2);
-  return { primary, secondary: total - primary, splitMode: "balanced" };
+  return { primary, secondary: total - primary };
 }
 function applySizingBias(allocation, bias, baseline, { topology, passiveScale }) {
-  const total = allocation.primary + allocation.secondary;
   if (bias === "normal") return { ...allocation, biased: false };
+  const total = allocation.primary + allocation.secondary;
   const minSecondary = baseline.passiveNodes;
   const minPrimary = baseline.activeNodes;
   const slack = Math.max(0, total - minPrimary - minSecondary);
@@ -492,12 +509,9 @@ function buildSizingXlsx(r) {
   inputs.push(["Sizing bias", r.sizingBias === "performance" ? "Performance" : r.sizingBias === "resilience" ? "Resilience" : "Normal"]);
   inputs.push(["Load baseline tier", String(r.loadTier || r.baseline?.tier || "").toUpperCase()]);
   inputs.push(["Artifactory licenses purchased", r.licenseMode ? r.licensePurchased : "Auto (from load)"]);
-  if (r.licenseMode && r.licenseAllocation) {
-    inputs.push(["License split", r.licenseAllocation.splitMode]);
-    if (r.licenseAllocation.secondary > 0) {
-      inputs.push(["Licenses — primary site", r.licenseAllocation.primary]);
-      inputs.push(["Licenses — secondary site", r.licenseAllocation.secondary]);
-    }
+  if (r.licenseMode && r.licenseAllocation && r.licenseAllocation.secondary > 0) {
+    inputs.push(["Licenses — primary site", r.licenseAllocation.primary]);
+    inputs.push(["Licenses — secondary site", r.licenseAllocation.secondary]);
   }
   inputs.push(["Load balancer", r.externalLB ? r.lbDisplay : "None"]);
   inputs.push(["NGINX tier provisioned", r.provisionNginx ? "Yes" : "No"]);
@@ -2178,6 +2192,20 @@ function buildSiteComponents(ctx) {
   };
 }
 
+let lastLicenseSplitKey = "";
+
+function syncLicenseSplitFields(total, topology, passiveScale, ha, force) {
+  const primaryEl = document.getElementById("licensePrimary");
+  const secondaryEl = document.getElementById("licenseSecondary");
+  if (!primaryEl || !secondaryEl || !total || total < 1) return;
+  const key = `${total}|${topology}|${passiveScale}|${ha}`;
+  if (!force && key === lastLicenseSplitKey) return;
+  const split = defaultLicenseSplit(total, topology, passiveScale);
+  primaryEl.value = split.primary;
+  secondaryEl.value = split.secondary;
+  lastLicenseSplitKey = key;
+}
+
 function toggleConditionalFields() {
   const deployment = document.querySelector('input[name="deployment"]:checked').value;
   const topology   = document.querySelector('input[name="topology"]:checked').value;
@@ -2188,19 +2216,13 @@ function toggleConditionalFields() {
   const licenseRaw = document.getElementById("licensePurchased").value.trim();
   const licensePurchased = licenseRaw !== "" ? parseInt(licenseRaw, 10) : 0;
   const licenseMode = licensePurchased > 0;
+  const ha = document.querySelector('input[name="ha"]:checked').value === "yes";
   const isMulti = topology !== "single";
   const isWarm = topology === "active-passive" && document.querySelector('input[name="passiveScale"]:checked')?.value === "warm";
-  const licenseSplit = document.querySelector('input[name="licenseSplit"]:checked')?.value || "balanced";
+  const showAllocation = licenseMode && ha && isMulti && !isWarm;
 
-  document.getElementById("licenseSplitField").style.display = licenseMode && isMulti && !isWarm ? "" : "none";
-  document.getElementById("licensePrimaryField").style.display = licenseMode && isMulti && !isWarm && licenseSplit === "custom" ? "" : "none";
+  document.getElementById("licenseAllocationField").style.display = showAllocation ? "" : "none";
   document.getElementById("licenseWarmHint").style.display = licenseMode && isWarm ? "" : "none";
-
-  if (licenseMode && isMulti && !isWarm && licenseSplit === "custom") {
-    const secondary = Math.max(0, licensePurchased - (parseInt(document.getElementById("licensePrimary").value, 10) || 1));
-    const hint = document.getElementById("licenseSecondaryHint");
-    if (hint) hint.textContent = `Secondary site: ${secondary} license${secondary === 1 ? "" : "s"}`;
-  }
 
   const usingLB = document.querySelector('input[name="lb"]:checked').value === "external";
   const nginxSkip = document.getElementById("nginxSkipRadio");
@@ -2254,6 +2276,16 @@ function calculate() {
   const topology      = document.querySelector('input[name="topology"]:checked').value;
   const passiveScale  = document.querySelector('input[name="passiveScale"]:checked')?.value || "hot";
 
+  const licenseRawEarly = document.getElementById("licensePurchased").value.trim();
+  const licensePurchasedEarly = licenseRawEarly !== "" ? parseInt(licenseRawEarly, 10) : 0;
+  const isMultiEarly = topology === "active-passive" || topology === "active-active";
+  const isWarmEarly = topology === "active-passive" && passiveScale === "warm";
+  const showAllocationEarly = licensePurchasedEarly > 0 && ha && isMultiEarly && !isWarmEarly;
+  const splitKeyEarly = licenseSplitContextKey(licensePurchasedEarly, topology, passiveScale, ha);
+  if (showAllocationEarly && splitKeyEarly !== lastLicenseSplitKey) {
+    syncLicenseSplitFields(licensePurchasedEarly, topology, passiveScale, ha, true);
+  }
+
   const growthPct     = Math.max(0, parseFloat(document.getElementById("growthPct").value) || 0);
   const growthFactor  = 1 + growthPct / 100;
 
@@ -2306,8 +2338,8 @@ function calculate() {
   const licenseRaw   = document.getElementById("licensePurchased").value.trim();
   const licensePurchased = licenseRaw !== "" ? parseInt(licenseRaw, 10) : 0;
   const licenseMode  = licensePurchased > 0;
-  const licenseSplit = document.querySelector('input[name="licenseSplit"]:checked')?.value || "balanced";
-  const licensePrimaryInput = parseInt(document.getElementById("licensePrimary").value, 10) || 1;
+  const licensePrimaryInput = parseInt(document.getElementById("licensePrimary").value, 10);
+  const licenseSecondaryInput = parseInt(document.getElementById("licenseSecondary").value, 10);
 
   const connsTier  = tierFromConns(activeClients);
   const rpmTierKey = tierFromRpm(rpm);
@@ -2366,9 +2398,15 @@ function calculate() {
     }
   } else {
     let alloc = allocateLicenses({
-      total: licensePurchased, topology, passiveScale, splitMode: licenseSplit, licensePrimary: licensePrimaryInput
+      total: licensePurchased, topology, passiveScale, ha,
+      licensePrimary: licensePrimaryInput,
+      licenseSecondary: licenseSecondaryInput
     });
-    alloc = applySizingBias(alloc, sizingBias, baseline, { topology, passiveScale });
+    if (sizingBias !== "normal") {
+      alloc = applySizingBias(alloc, sizingBias, baseline, { topology, passiveScale });
+    } else {
+      alloc = { ...alloc, biased: false };
+    }
     licenseAllocation = alloc;
 
     const snapPrimary = snapArtiReplicas(alloc.primary, ha);
@@ -2425,7 +2463,7 @@ function calculate() {
     passiveComponents, passiveTotals, passiveTier,
     binaryStorageTarget,
     infraType, cpuLabel,
-    sizingBias, licenseMode, licensePurchased, licenseSplit, licenseAllocation,
+    sizingBias, licenseMode, licensePurchased, licenseAllocation,
     biasDelta, licenseSnapWarnings, resilienceOverride
   });
 }
@@ -2809,6 +2847,20 @@ function render(r) {
   }
   if (r.licenseMode && isMulti && r.licensePurchased < 2) {
     warnings.push({type:"danger", text:"Multi-site topology requires at least 2 Artifactory licenses (one per site minimum)."});
+  }
+  if (r.licenseMode && !r.ha) {
+    const lic = licenseCount(r);
+    const siteCount = isMulti ? 2 : 1;
+    const maxNeeded = siteCount; // one Artifactory node per site in single-replica mode
+    if (r.licensePurchased > maxNeeded || lic.unused > 0) {
+      const excess = Math.max(r.licensePurchased - maxNeeded, lic.unused);
+      warnings.push({type:"warn", text:`<strong>Excess licenses:</strong> single-replica mode needs at most <strong>${maxNeeded}</strong> Artifactory license${maxNeeded === 1 ? "" : "s"} (${lic.total} deployed across ${siteCount} site${siteCount === 1 ? "" : "s"}) — <strong>${excess}</strong> purchased license${excess === 1 ? " is" : "s are"} not needed.`});
+    }
+  } else if (r.licenseMode) {
+    const lic = licenseCount(r);
+    if (lic.unused > 0) {
+      warnings.push({type:"info", text:`<strong>Unused licenses:</strong> <strong>${lic.unused}</strong> of ${r.licensePurchased} purchased license${r.licensePurchased === 1 ? " is" : "s are"} not assigned to an Artifactory node in this sizing.`});
+    }
   }
   if (r.resilienceOverride) {
     warnings.push({type:"info", text:"<strong>Resilience bias:</strong> passive site sized at full mirror replica counts despite Warm Standby topology selection — this is a sizing recommendation for failover headroom, not a change to your topology input."});
@@ -3395,7 +3447,29 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
 document.getElementById("exportBtn").addEventListener("click", () => downloadXlsx(lastResult));
 document.getElementById("inputs").addEventListener("change", calculate);
 document.getElementById("inputs").addEventListener("input", (e) => {
-  if (e.target.type === "number") calculate();
+  const topology = document.querySelector('input[name="topology"]:checked').value;
+  const passiveScale = document.querySelector('input[name="passiveScale"]:checked')?.value || "hot";
+  const ha = document.querySelector('input[name="ha"]:checked').value === "yes";
+  if (e.target.id === "licensePurchased") {
+    const total = parseInt(e.target.value, 10);
+    if (total > 0) syncLicenseSplitFields(total, topology, passiveScale, ha, true);
+  } else if (e.target.id === "licensePrimary") {
+    const total = parseInt(document.getElementById("licensePurchased").value, 10) || 0;
+    const primary = parseInt(e.target.value, 10) || 0;
+    const secondaryEl = document.getElementById("licenseSecondary");
+    if (total > 0 && secondaryEl) secondaryEl.value = Math.max(0, total - primary);
+    if (total > 0) lastLicenseSplitKey = licenseSplitContextKey(total, topology, passiveScale, ha);
+  } else if (e.target.id === "licenseSecondary") {
+    const total = parseInt(document.getElementById("licensePurchased").value, 10) || 0;
+    const secondary = parseInt(e.target.value, 10) || 0;
+    const primaryEl = document.getElementById("licensePrimary");
+    if (total > 0 && primaryEl) primaryEl.value = Math.max(0, total - secondary);
+    if (total > 0) lastLicenseSplitKey = licenseSplitContextKey(total, topology, passiveScale, ha);
+  } else if (e.target.type === "number") {
+    calculate();
+    return;
+  }
+  calculate();
 });
 
 function paintRadioStates() {
