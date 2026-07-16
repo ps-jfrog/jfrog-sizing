@@ -9,7 +9,7 @@
       "rabbitmq": "https://docs.jfrog.com/installation/docs/rabbitmq-split-for-xray"
     }
   },
-  "dataDate": "2026-06-29",
+  "dataDate": "2026-07-13",
   "REPLICAS": {
     "artifactory": {
       "small": 1,
@@ -51,28 +51,28 @@
     "aws": {
       "artifactory": {
         "small": {
-          "instance": "m8g.2xlarge",
-          "cpu": 8,
+          "instance": "c8g.4xlarge",
+          "cpu": 16,
           "memGB": 32
         },
         "medium": {
-          "instance": "m8g.2xlarge",
-          "cpu": 8,
+          "instance": "c8g.4xlarge",
+          "cpu": 16,
           "memGB": 32
         },
         "large": {
-          "instance": "m8g.4xlarge",
-          "cpu": 16,
+          "instance": "c8g.8xlarge",
+          "cpu": 32,
           "memGB": 64
         },
         "xlarge": {
-          "instance": "m8g.4xlarge",
-          "cpu": 16,
+          "instance": "c8g.8xlarge",
+          "cpu": 32,
           "memGB": 64
         },
         "2xlarge": {
-          "instance": "m8g.4xlarge",
-          "cpu": 16,
+          "instance": "c8g.8xlarge",
+          "cpu": 32,
           "memGB": 64
         }
       },
@@ -252,28 +252,28 @@
     "azure": {
       "artifactory": {
         "small": {
-          "instance": "Standard_D8s_v6",
-          "cpu": 8,
+          "instance": "Standard_F16s_v2",
+          "cpu": 16,
           "memGB": 32
         },
         "medium": {
-          "instance": "Standard_D8s_v6",
-          "cpu": 8,
+          "instance": "Standard_F16s_v2",
+          "cpu": 16,
           "memGB": 32
         },
         "large": {
-          "instance": "Standard_D16s_v6",
-          "cpu": 16,
+          "instance": "Standard_F32s_v2",
+          "cpu": 32,
           "memGB": 64
         },
         "xlarge": {
-          "instance": "Standard_D16s_v6",
-          "cpu": 16,
+          "instance": "Standard_F32s_v2",
+          "cpu": 32,
           "memGB": 64
         },
         "2xlarge": {
-          "instance": "Standard_D16s_v6",
-          "cpu": 16,
+          "instance": "Standard_F32s_v2",
+          "cpu": 32,
           "memGB": 64
         }
       },
@@ -453,28 +453,28 @@
     "gcp": {
       "artifactory": {
         "small": {
-          "instance": "n4-standard-8",
-          "cpu": 8,
+          "instance": "c4d-highcpu-16",
+          "cpu": 16,
           "memGB": 32
         },
         "medium": {
-          "instance": "n4-standard-8",
-          "cpu": 8,
+          "instance": "c4d-highcpu-16",
+          "cpu": 16,
           "memGB": 32
         },
         "large": {
-          "instance": "n4-standard-16",
-          "cpu": 16,
+          "instance": "c4d-highcpu-32",
+          "cpu": 32,
           "memGB": 64
         },
         "xlarge": {
-          "instance": "n4-standard-16",
-          "cpu": 16,
+          "instance": "c4d-highcpu-32",
+          "cpu": 32,
           "memGB": 64
         },
         "2xlarge": {
-          "instance": "n4-standard-8",
-          "cpu": 16,
+          "instance": "c4d-highcpu-32",
+          "cpu": 32,
           "memGB": 64
         }
       },
@@ -654,28 +654,28 @@
     "onprem": {
       "artifactory": {
         "small": {
-          "instance": "VM 8 vCPU / 32 GB",
-          "cpu": 8,
+          "instance": "VM 16 vCPU / 32 GB",
+          "cpu": 16,
           "memGB": 32
         },
         "medium": {
-          "instance": "VM 8 vCPU / 32 GB",
-          "cpu": 8,
+          "instance": "VM 16 vCPU / 32 GB",
+          "cpu": 16,
           "memGB": 32
         },
         "large": {
-          "instance": "VM 16 vCPU / 64 GB",
-          "cpu": 16,
+          "instance": "VM 32 vCPU / 64 GB",
+          "cpu": 32,
           "memGB": 64
         },
         "xlarge": {
-          "instance": "VM 16 vCPU / 64 GB",
-          "cpu": 16,
+          "instance": "VM 32 vCPU / 64 GB",
+          "cpu": 32,
           "memGB": 64
         },
         "2xlarge": {
-          "instance": "VM 16 vCPU / 64 GB",
-          "cpu": 16,
+          "instance": "VM 32 vCPU / 64 GB",
+          "cpu": 32,
           "memGB": 64
         }
       },
