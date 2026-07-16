@@ -138,11 +138,43 @@
     </div>
 
     <div class="field">
+      <label>Sizing bias <span class="tip-icon" data-tip="Normal sizes to the load baseline. Performance favors higher throughput (one tier above load when no license is set, or skews extra licenses to the primary site). Resilience favors failover headroom (full passive mirror when warm is selected, or skews extra licenses to the secondary site). Highlights when the recommendation differs from the load baseline.">i</span></label>
+      <div class="radio-group" data-name="sizingBias">
+        <label><input type="radio" name="sizingBias" value="normal" checked /> Normal</label>
+        <label><input type="radio" name="sizingBias" value="performance" /> Performance</label>
+        <label><input type="radio" name="sizingBias" value="resilience" /> Resilience</label>
+      </div>
+    </div>
+
+    <div class="field">
       <label>High Availability (HA) <span class="tip-icon" data-tip="Multi-replica uses JFrog-published replica counts per tier (1/2/3/4/6 for Artifactory).">i</span></label>
       <div class="radio-group" data-name="ha">
         <label><input type="radio" name="ha" value="yes" checked /> Multi-replica</label>
         <label><input type="radio" name="ha" value="no" /> Single replica</label>
       </div>
+    </div>
+
+    <div class="field" id="licenseField">
+      <label>Artifactory licenses purchased <span class="tip-icon" data-tip="Optional. Leave blank to size from load only (current behavior). When set, one license per HA Artifactory node per site; total must cover all sites.">i</span></label>
+      <input type="number" id="licensePurchased" min="1" step="1" placeholder="Auto (from load)" />
+    </div>
+
+    <div class="field" id="licenseAllocationField" style="display:none;">
+      <label>License allocation <span class="tip-icon" data-tip="Split purchased licenses across datacenters. Defaults to an even split; adjust either field and the other updates to match the purchased total.">i</span></label>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:120px;">
+          <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px;">Primary site</label>
+          <input type="number" id="licensePrimary" min="0" step="1" value="1" />
+        </div>
+        <div style="flex:1; min-width:120px;">
+          <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px;">Secondary site</label>
+          <input type="number" id="licenseSecondary" min="0" step="1" value="0" />
+        </div>
+      </div>
+    </div>
+
+    <div class="field" id="licenseWarmHint" style="display:none;">
+      <div class="hint" style="font-size:13px;">Warm standby reserves <strong>1 license</strong> for the passive site; the remainder is allocated to the primary site.</div>
     </div>
 
     <div class="field">
@@ -202,20 +234,6 @@
       <div class="radio-group" data-name="dbInstances">
         <label><input type="radio" name="dbInstances" value="shared" /> Shared (one instance)</label>
         <label><input type="radio" name="dbInstances" value="dedicated" checked /> Dedicated per product</label>
-      </div>
-    </div>
-
-    <div class="field">
-      <label>Purchased Artifactory licenses <span class="tip-icon" data-tip="Optional. Enter how many Artifactory node licenses you've purchased. The calculator will show you the optimal allocation across sites, what performance tier each site achieves, and how many more licenses unlock the next tier.">i</span></label>
-      <input type="number" id="purchasedLicenses" min="1" max="200" step="1" value="" placeholder="e.g. 8 — leave blank to skip" />
-    </div>
-
-    <div class="field" id="licenseBiasField" style="display:none;">
-      <label>Allocation bias <span class="tip-icon" data-tip="Performance: maximise primary-site capacity, minimal secondary. Balanced: primary gets ~60% of licenses. Resiliency: split as evenly as possible so both sites reach the same tier.">i</span></label>
-      <div class="radio-group tri">
-        <label><input type="radio" name="licenseBias" value="performance" /> Performance</label>
-        <label><input type="radio" name="licenseBias" value="balanced" checked /> Balanced</label>
-        <label><input type="radio" name="licenseBias" value="resiliency" /> Resiliency</label>
       </div>
     </div>
 
