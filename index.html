@@ -160,16 +160,11 @@
     </div>
 
     <div class="field" id="licenseAllocationField" style="display:none;">
-      <label>License allocation <span class="tip-icon" data-tip="Split purchased licenses across datacenters. Defaults to an even split; adjust either field and the other updates to match the purchased total.">i</span></label>
-      <div style="display:flex; gap:12px; flex-wrap:wrap;">
-        <div style="flex:1; min-width:120px;">
-          <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px;">Primary site</label>
-          <input type="number" id="licensePrimary" min="0" step="1" value="1" />
-        </div>
-        <div style="flex:1; min-width:120px;">
-          <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px;">Secondary site</label>
-          <input type="number" id="licenseSecondary" min="0" step="1" value="0" />
-        </div>
+      <label>License allocation — primary / secondary split <span class="tip-icon" data-tip="Drag to split purchased licenses across sites. Primary gets the slider value; secondary gets the remainder. The sizing bias above pre-positions the handle — move it to override.">i</span></label>
+      <input type="range" id="licenseSlider" min="1" max="1" step="1" value="1" style="width:100%; accent-color:var(--accent); margin:6px 0 2px;" />
+      <div id="licenseSliderDisplay" style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted);">
+        <span>Primary: <strong id="licenseSliderPrimary">—</strong></span>
+        <span>Secondary: <strong id="licenseSliderSecondary">—</strong></span>
       </div>
     </div>
 

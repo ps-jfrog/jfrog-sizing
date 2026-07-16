@@ -2194,15 +2194,27 @@ function buildSiteComponents(ctx) {
 
 let lastLicenseSplitKey = "";
 
+function updateSliderDisplay(total) {
+  const sliderEl = document.getElementById("licenseSlider");
+  if (!sliderEl) return;
+  const primary   = parseInt(sliderEl.value, 10);
+  const secondary = Math.max(0, total - primary);
+  const pd = document.getElementById("licenseSliderPrimary");
+  const sd = document.getElementById("licenseSliderSecondary");
+  if (pd) pd.textContent = primary;
+  if (sd) sd.textContent = secondary;
+}
+
 function syncLicenseSplitFields(total, topology, passiveScale, ha, force) {
-  const primaryEl = document.getElementById("licensePrimary");
-  const secondaryEl = document.getElementById("licenseSecondary");
-  if (!primaryEl || !secondaryEl || !total || total < 1) return;
+  const sliderEl = document.getElementById("licenseSlider");
+  if (!sliderEl || !total || total < 2) return;
   const key = `${total}|${topology}|${passiveScale}|${ha}`;
   if (!force && key === lastLicenseSplitKey) return;
   const split = defaultLicenseSplit(total, topology, passiveScale);
-  primaryEl.value = split.primary;
-  secondaryEl.value = split.secondary;
+  sliderEl.min   = 1;
+  sliderEl.max   = total - 1;
+  sliderEl.value = split.primary;
+  updateSliderDisplay(total);
   lastLicenseSplitKey = key;
 }
 
@@ -2219,7 +2231,7 @@ function toggleConditionalFields() {
   const ha = document.querySelector('input[name="ha"]:checked').value === "yes";
   const isMulti = topology !== "single";
   const isWarm = topology === "active-passive" && document.querySelector('input[name="passiveScale"]:checked')?.value === "warm";
-  const showAllocation = licenseMode && ha && isMulti && !isWarm;
+  const showAllocation = licenseMode && licensePurchased > 1 && ha && isMulti && !isWarm;
 
   document.getElementById("licenseAllocationField").style.display = showAllocation ? "" : "none";
   document.getElementById("licenseWarmHint").style.display = licenseMode && isWarm ? "" : "none";
@@ -2280,7 +2292,7 @@ function calculate() {
   const licensePurchasedEarly = licenseRawEarly !== "" ? parseInt(licenseRawEarly, 10) : 0;
   const isMultiEarly = topology === "active-passive" || topology === "active-active";
   const isWarmEarly = topology === "active-passive" && passiveScale === "warm";
-  const showAllocationEarly = licensePurchasedEarly > 0 && ha && isMultiEarly && !isWarmEarly;
+  const showAllocationEarly = licensePurchasedEarly > 1 && ha && isMultiEarly && !isWarmEarly;
   const splitKeyEarly = licenseSplitContextKey(licensePurchasedEarly, topology, passiveScale, ha);
   if (showAllocationEarly && splitKeyEarly !== lastLicenseSplitKey) {
     syncLicenseSplitFields(licensePurchasedEarly, topology, passiveScale, ha, true);
@@ -2338,8 +2350,9 @@ function calculate() {
   const licenseRaw   = document.getElementById("licensePurchased").value.trim();
   const licensePurchased = licenseRaw !== "" ? parseInt(licenseRaw, 10) : 0;
   const licenseMode  = licensePurchased > 0;
-  const licensePrimaryInput = parseInt(document.getElementById("licensePrimary").value, 10);
-  const licenseSecondaryInput = parseInt(document.getElementById("licenseSecondary").value, 10);
+  const sliderEl = document.getElementById("licenseSlider");
+  const licensePrimaryInput   = sliderEl ? parseInt(sliderEl.value, 10) : Math.ceil(licensePurchased / 2);
+  const licenseSecondaryInput = licensePurchased > 0 ? Math.max(0, licensePurchased - licensePrimaryInput) : 0;
 
   const connsTier  = tierFromConns(activeClients);
   const rpmTierKey = tierFromRpm(rpm);
@@ -3683,18 +3696,12 @@ document.getElementById("inputs").addEventListener("input", (e) => {
   if (e.target.id === "licensePurchased") {
     const total = parseInt(e.target.value, 10);
     if (total > 0) syncLicenseSplitFields(total, topology, passiveScale, ha, true);
-  } else if (e.target.id === "licensePrimary") {
+  } else if (e.target.id === "licenseSlider") {
     const total = parseInt(document.getElementById("licensePurchased").value, 10) || 0;
-    const primary = parseInt(e.target.value, 10) || 0;
-    const secondaryEl = document.getElementById("licenseSecondary");
-    if (total > 0 && secondaryEl) secondaryEl.value = Math.max(0, total - primary);
-    if (total > 0) lastLicenseSplitKey = licenseSplitContextKey(total, topology, passiveScale, ha);
-  } else if (e.target.id === "licenseSecondary") {
-    const total = parseInt(document.getElementById("licensePurchased").value, 10) || 0;
-    const secondary = parseInt(e.target.value, 10) || 0;
-    const primaryEl = document.getElementById("licensePrimary");
-    if (total > 0 && primaryEl) primaryEl.value = Math.max(0, total - secondary);
-    if (total > 0) lastLicenseSplitKey = licenseSplitContextKey(total, topology, passiveScale, ha);
+    if (total > 0) {
+      updateSliderDisplay(total);
+      lastLicenseSplitKey = licenseSplitContextKey(total, topology, passiveScale, ha);
+    }
   } else if (e.target.type === "number") {
     calculate();
     return;
