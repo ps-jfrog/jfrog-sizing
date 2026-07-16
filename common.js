@@ -1885,6 +1885,12 @@ function toggleConditionalFields() {
     }
   }
 
+  // License allocation bias — only relevant for multi-site topologies.
+  const licenseBiasField = document.getElementById("licenseBiasField");
+  if (licenseBiasField) {
+    licenseBiasField.style.display = (topology === "active-passive" || topology === "active-active") ? "" : "none";
+  }
+
   const isVm = deployment === "vm";
 
   // Valkey: Servers always use external Valkey; K8s bundles it in the Helm chart
@@ -1963,6 +1969,10 @@ function calculate() {
   // the recommended external spec + plugin/config requirements are surfaced separately.
   const externalRMQ  = document.querySelector('input[name="rmq"]:checked').value === "external";
 
+  // License allocation advisory — optional; 0 = not entered, skip the panel.
+  const purchasedLicenses = Math.max(0, parseInt(document.getElementById("purchasedLicenses")?.value) || 0);
+  const allocationBias    = document.querySelector('input[name="licenseBias"]:checked')?.value || "balanced";
+
   // Effective tier = max of connections-implied and RPM-implied tier.
   const connsTier  = tierFromConns(activeClients);
   const rpmTierKey = tierFromRpm(rpm);
@@ -1977,8 +1987,11 @@ function calculate() {
 
   const xrayEnabled = xrayChecked;
 
-  const infraType = document.querySelector('input[name="infra_type"]:checked')?.value || "vm"; // vm | baremetal
-  const cpuLabel  = infraType === "baremetal" ? "cores" : "vCPU";
+  const infraType  = document.querySelector('input[name="infra_type"]:checked')?.value || "vm"; // vm | baremetal
+  const cpuLabel   = infraType === "baremetal" ? "cores" : "vCPU";
+  // Terminology: Kubernetes uses "replica" (pod/container count); Servers use "node" (VM/host).
+  const nodeLabel  = deployment === "k8s" ? "replica" : "node";
+  const nodesLabel = deployment === "k8s" ? "replicas" : "nodes";
 
   // Per-tier DB connection caps (for the external-database max_connections guidance).
   const artiDbMaxConns = arch.artifactoryDb[tier].maxConns;
@@ -2330,7 +2343,8 @@ function calculate() {
     components, activeTotals,
     passiveComponents, passiveTotals,
     binaryStorageTarget,
-    infraType, cpuLabel
+    infraType, cpuLabel, nodeLabel, nodesLabel,
+    purchasedLicenses, allocationBias
   });
 }
 
@@ -2575,12 +2589,237 @@ function buildDiagramPanel(r) {
     </details>`;
 }
 
+/* ---------- License allocation advisory panel ---------- */
+
+// Valid Artifactory node counts matching the published tier thresholds.
+const ARTI_TIER_STEPS = [
+  { nodes: 1, key: "small",   name: "Small"   },
+  { nodes: 2, key: "medium",  name: "Medium"  },
+  { nodes: 3, key: "large",   name: "Large"   },
+  { nodes: 4, key: "xlarge",  name: "XLarge"  },
+  { nodes: 6, key: "2xlarge", name: "2XLarge" },
+];
+
+function artiTierFromNodes(n) {
+  // Highest published tier reachable with n nodes.
+  for (let i = ARTI_TIER_STEPS.length - 1; i >= 0; i--) {
+    if (n >= ARTI_TIER_STEPS[i].nodes) return ARTI_TIER_STEPS[i];
+  }
+  return ARTI_TIER_STEPS[0];
+}
+
+function nextArtiTier(n) {
+  // The next tier that requires more nodes than n; null if already at 2XLarge.
+  return ARTI_TIER_STEPS.find(t => t.nodes > n) || null;
+}
+
+function buildLicenseAllocationPanel(r) {
+  if (!r.purchasedLicenses || r.purchasedLicenses < 1) return "";
+
+  const N       = r.purchasedLicenses;
+  const bias    = r.allocationBias || "balanced";
+  const isAP    = r.topology === "active-passive";
+  const isAA    = r.topology === "active-active";
+  const isMulti = isAP || isAA;
+
+  const arti          = findComp(r, "Artifactory");
+  const currentActive = arti ? arti.replicas : 1;
+  const currentPassive = isMulti
+    ? ((r.passiveComponents || []).find(c => c.name === "Artifactory")?.replicas || 0)
+    : 0;
+  const currentTotal = currentActive + currentPassive;
+  const gap          = currentTotal - N;
+
+  const siteA = isAA ? "Site A" : "Primary";
+  const siteB = isAA ? "Site B" : "Passive";
+
+  const NL  = r.nodeLabel;   // "replica" (K8s) or "node" (Servers)
+  const NLS = r.nodesLabel;  // "replicas" or "nodes"
+  const Cap = s => s.charAt(0).toUpperCase() + s.slice(1); // capitalise first letter
+
+  let html = `
+    <details class="panel" open>
+      <summary style="font-size:14px;">License allocation — ${N} purchased Artifactory license${N === 1 ? "" : "s"}</summary>
+      <div class="notice info" style="margin-top:10px; font-size:12px;">
+        <strong>How licensing maps to your deployment:</strong>
+        1 Artifactory license = 1 Artifactory ${NL}
+        ${r.deployment === "k8s"
+          ? "(a running pod/container in the StatefulSet — set via <code>replicaCount</code> in the Helm chart)."
+          : "(a dedicated server or VM running the Artifactory process)."}
+        Other JFrog services (Xray, Nginx, RabbitMQ, Catalog …) do <em>not</em> consume Artifactory licenses.
+      </div>
+      <div class="notice ${gap > 0 ? "danger" : "info"}" style="margin-top:8px;">
+        <strong>Your current sizing consumes ${currentTotal} Artifactory license${currentTotal === 1 ? "" : "s"}</strong>
+        ${isMulti ? ` (${currentActive} ${siteA} + ${currentPassive} ${siteB} Artifactory ${NLS})` : ` (${currentActive} Artifactory ${currentActive === 1 ? NL : NLS})`}.
+        ${gap > 0
+          ? `You are <strong>${gap} license${gap === 1 ? "" : "s"} short</strong> — increase your license count or reduce the tier.`
+          : N === currentTotal
+            ? "Your purchased licenses exactly match this sizing."
+            : `You have <strong>${N - currentTotal} spare license${N - currentTotal === 1 ? "" : "s"}</strong> — see the allocation options below.`}
+      </div>
+  `;
+
+  if (!isMulti) {
+    // ── Single site ────────────────────────────────────────────────────────────
+    const usable  = Math.min(N, 6); // 2XLarge cap
+    const surplus = N - usable;
+    const tier    = artiTierFromNodes(usable);
+    const next    = nextArtiTier(usable);
+
+    html += `
+      <table style="margin-top:12px;">
+        <thead><tr><th>Artifactory ${NLS}</th><th>Tier</th><th>Licenses used</th><th>Banked</th></tr></thead>
+        <tbody>
+          <tr style="background:rgba(64,191,106,0.15);font-weight:600;">
+            <td>${usable}</td>
+            <td><span class="chip ok">${tier.name}</span></td>
+            <td>${usable}</td>
+            <td>${surplus > 0 ? surplus : "—"}</td>
+          </tr>
+        </tbody>
+      </table>`;
+
+    if (next) {
+      const needed = next.nodes - usable;
+      html += `<div class="notice" style="margin-top:10px;"><strong>Next upgrade:</strong> ${needed} more license${needed === 1 ? "" : "s"} (${next.nodes} total) → <strong>${next.name}</strong> (${next.nodes} Artifactory ${next.nodes === 1 ? NL : NLS}).</div>`;
+    } else {
+      html += `<div class="hint" style="margin-top:10px;">You are at the maximum published tier (2XLarge, 6 Artifactory ${NLS}). For scale beyond 2XLarge contact JFrog Support.</div>`;
+    }
+
+  } else {
+    // ── Multi-site ─────────────────────────────────────────────────────────────
+    // Generate one row per valid primary tier. Secondary gets the highest tier
+    // reachable with the remaining budget (capped at 6 / 2XLarge).
+    const rows = [];
+    for (const pt of ARTI_TIER_STEPS) {
+      if (pt.nodes >= N) continue;          // must leave at least 1 for the other site
+      const remaining = N - pt.nodes;
+      const st = artiTierFromNodes(Math.min(remaining, 6));
+      const surplus = remaining - st.nodes;
+      rows.push({ pNodes: pt.nodes, pTier: pt, sNodes: st.nodes, sTier: st, used: pt.nodes + st.nodes, surplus });
+    }
+
+    // Recommended split based on bias.
+    function recommendedSplit() {
+      if (bias === "performance") {
+        // Maximise primary.
+        return rows[rows.length - 1];
+      }
+      if (bias === "resiliency") {
+        // Both sites at the same (or closest) tier.
+        return rows.reduce((best, row) => {
+          const diff    = Math.abs(row.pNodes - row.sNodes);
+          const bestDiff = Math.abs(best.pNodes - best.sNodes);
+          return diff < bestDiff ? row : best;
+        });
+      }
+      // Balanced: primary roughly 60 % — pick the row closest to that ratio.
+      const target = N * 0.6;
+      return rows.reduce((best, row) => Math.abs(row.pNodes - target) < Math.abs(best.pNodes - target) ? row : best);
+    }
+
+    const rec = recommendedSplit();
+
+    // For A/A flag if sites aren't equal-tier.
+    const aaImbalanceNote = isAA ? `<div class="notice" style="margin-top:10px;">In Active-Active both sites serve live traffic. Unequal tiers create an imbalanced system — a <strong>balanced (equal) split is strongly recommended</strong>.</div>` : "";
+
+    html += aaImbalanceNote;
+
+    html += `
+      <table style="margin-top:12px;">
+        <thead>
+          <tr>
+            <th>${siteA} ${Cap(NLS)}</th><th>${siteA} tier</th>
+            <th>${siteB} ${Cap(NLS)}</th><th>${siteB} tier</th>
+            <th>Licenses used</th><th>Banked</th><th></th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+    // Sort: performance-first (most primary nodes first).
+    rows.slice().reverse().forEach(row => {
+      const isRec = row === rec;
+      const biasChip = isRec ? `<span class="chip warn" style="font-size:10px;padding:1px 5px;">★ ${bias}</span>` : "";
+      const aaWarn   = isAA && row.pTier.name !== row.sTier.name ? `<span class="chip" style="font-size:10px;padding:1px 5px;opacity:0.7;">unbalanced</span>` : "";
+      html += `
+        <tr${isRec ? ' style="background:rgba(64,191,106,0.15);font-weight:600;"' : ""}>
+          <td>${row.pNodes}</td>
+          <td><span class="chip ${isRec ? "ok" : ""}">${row.pTier.name}</span></td>
+          <td>${row.sNodes}</td>
+          <td><span class="chip ${isRec && row.sTier.name === row.pTier.name ? "ok" : ""}">${row.sTier.name}</span></td>
+          <td>${row.used}</td>
+          <td>${row.surplus > 0 ? row.surplus : "—"}</td>
+          <td>${biasChip}${aaWarn}</td>
+        </tr>`;
+    });
+
+    html += `</tbody></table>`;
+
+    // ── Scaling path ────────────────────────────────────────────────────────────
+    const milestones = [];
+    const seen = new Set();
+
+    // For each tier step above each site in the recommended split, compute
+    // how many additional licenses unlock it.
+    for (const step of ARTI_TIER_STEPS) {
+      if (step.nodes > rec.pNodes) {
+        const extra = step.nodes - rec.pNodes;
+        const label = `${siteA}: ${rec.pNodes} → ${step.nodes} Artifactory ${NLS} → <strong>${step.name}</strong>`;
+        const key   = `${extra}|${label}`;
+        if (!seen.has(key)) { milestones.push({ extra, label }); seen.add(key); }
+      }
+      if (step.nodes > rec.sNodes) {
+        const extra = step.nodes - rec.sNodes;
+        const label = `${siteB}: ${rec.sNodes} → ${step.nodes} Artifactory ${NLS} → <strong>${step.name}</strong>`;
+        const key   = `${extra}|${label}`;
+        if (!seen.has(key)) { milestones.push({ extra, label }); seen.add(key); }
+      }
+    }
+
+    // "Equal tiers on both sites" milestones.
+    if (rec.pTier.name !== rec.sTier.name) {
+      const target = Math.max(rec.pNodes, rec.sNodes);
+      const extra  = (target - rec.pNodes) + (target - rec.sNodes);
+      if (extra > 0) {
+        const t    = artiTierFromNodes(target);
+        const key  = `${extra}|equal`;
+        if (!seen.has(key)) { milestones.push({ extra, label: `Equal tiers: ${target}+${target} Artifactory ${NLS} → <strong>${t.name}+${t.name}</strong> on both sites` }); seen.add(key); }
+      }
+    }
+
+    // "Fully scaled" (6+6 = 2XLarge both) milestone.
+    const fullExtra = (6 - rec.pNodes) + (6 - rec.sNodes);
+    if (fullExtra > 0) {
+      const key = `${fullExtra}|full`;
+      if (!seen.has(key)) { milestones.push({ extra: fullExtra, label: `Fully scaled: 6+6 Artifactory ${NLS} → <strong>2XLarge+2XLarge</strong> on both sites` }); seen.add(key); }
+    }
+
+    milestones.sort((a, b) => a.extra - b.extra);
+
+    if (milestones.length) {
+      html += `
+        <p style="margin:14px 0 6px;"><strong>Scaling path from recommended allocation (${rec.pNodes}+${rec.sNodes} Artifactory ${NLS}, ${rec.used} licenses):</strong></p>
+        <table>
+          <thead><tr><th>+Licenses</th><th>Total</th><th>Upgrade</th></tr></thead>
+          <tbody>`;
+      milestones.slice(0, 5).forEach(m => {
+        html += `<tr><td>+${m.extra}</td><td>${N + m.extra}</td><td>${m.label}</td></tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+  }
+
+  html += `</details>`;
+  return html;
+}
+
 function buildLicensePanel(r) {
   const items     = licenseItems(r);
   const lic       = licenseCount(r);
   const effective = lic.tier;
   const effClass  = effective === "Enterprise+" ? "danger" : effective === "Enterprise X" ? "warn" : "ok";
 
+  const isMulti   = r.topology === "active-passive" || r.topology === "active-active";
   const totalArti = lic.total;
   const splitNote = r.topology === "active-passive" ? ` (${lic.active} active + ${lic.passive} passive)`
                   : r.topology === "active-active"  ? ` (${lic.active} site A + ${lic.passive} site B)`
@@ -2600,14 +2839,14 @@ function buildLicensePanel(r) {
         One subscription licenses the whole JFrog Platform Site — Xray, Distribution, Mission Control, etc. are entitlements within that tier, not separately-licensed servers.
       </div>
       <div class="notice ${effClass}" style="margin-top:10px;">
-        <strong>Licenses needed for this configuration: ${totalArti} Artifactory node license${totalArti === 1 ? "" : "s"}${splitNote}.</strong>
-        The platform is licensed per Artifactory node — one license per HA node, per site.${lic.edge ? " Distribution Edge nodes carry their own <strong>Edge licenses</strong> (counted separately)." : ""}
+        <strong>Licenses needed for this configuration: ${totalArti} Artifactory license${totalArti === 1 ? "" : "s"}${splitNote}.</strong>
+        The platform is licensed per Artifactory ${r.nodeLabel} — <strong>1 license = 1 Artifactory ${r.nodeLabel}</strong>${isMulti ? ", per site" : ""}.${lic.edge ? " Distribution Edge nodes carry their own <strong>Edge licenses</strong> (counted separately)." : ""}
       </div>
       <table>
         <thead><tr><th>Product / capability</th><th>Min. subscription</th><th>Notes</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <div class="hint" style="margin-top:10px;"><strong>License count:</strong> HA consumes one Artifactory license per node — this deployment uses <strong>${totalArti}</strong> Artifactory license${totalArti === 1 ? "" : "s"}${splitNote} from your license bucket.${r.svc.distribution ? " Distribution Edge nodes are licensed separately (Edge licenses)." : ""}</div>
+      <div class="hint" style="margin-top:10px;"><strong>License count:</strong> each Artifactory ${r.nodeLabel} consumes one license — this deployment uses <strong>${totalArti}</strong> license${totalArti === 1 ? "" : "s"}${splitNote} from your license bucket.${r.svc.distribution ? " Distribution Edge nodes are licensed separately (Edge licenses)." : ""}</div>
       <div class="hint" style="margin-top:6px;"><strong>How it's applied:</strong> ${r.deployment === "k8s"
         ? "supply the license to the Helm chart via a Secret (<code>artifactory.license.secret</code> / <code>licenseKey</code>) or post-install through the UI / Access API."
         : "drop <code>artifactory.lic</code> into <code>$JFROG_HOME/artifactory/var/etc/artifactory/</code> (or apply via the UI / Access API) at install time."}</div>
@@ -2854,7 +3093,7 @@ function render(r) {
         <table>
           <thead>
             <tr>
-              <th>Component</th><th>Replicas</th><th>${r.cpuLabel}</th><th>RAM</th>
+              <th>Component</th><th>${r.nodesLabel.charAt(0).toUpperCase() + r.nodesLabel.slice(1)}</th><th>${r.cpuLabel}</th><th>RAM</th>
               <th>Disk / IOPS</th><th>${instColHeader}</th><th>Notes</th>
             </tr>
           </thead>
@@ -2927,6 +3166,7 @@ function render(r) {
 
   /* Licensing */
   html += buildLicensePanel(r);
+  html += buildLicenseAllocationPanel(r);
 
   /* Co-location rules */
   html += `
@@ -3171,7 +3411,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
   /* Deployment artifacts (Helm values.yaml for K8s, Ansible bundle for VMs) */
   html += buildArtifactPanel(r);
 
-  /* Node count formula */
+  /* Replica / node count formula */
   const TIER_ROWS = [
     { tier:"Small",   conns:"≤ 100",   rpm:"≤ 6,000",   arti:1, nginx:1, xray:1, rmq:1  },
     { tier:"Medium",  conns:"≤ 500",   rpm:"≤ 50,000",  arti:2, nginx:2, xray:2, rmq:3  },
@@ -3181,24 +3421,24 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
   ];
   html += `
     <details>
-      <summary>Node count formula — how the tier and replica counts are derived</summary>
+      <summary>${r.nodesLabel.charAt(0).toUpperCase() + r.nodesLabel.slice(1)} count formula — how the tier and ${r.nodesLabel} count are derived</summary>
       <p style="margin-top:10px;"><strong>Step 1 — classify each input into a tier:</strong></p>
       <ul style="margin:4px 0 10px; padding-left:20px; font-size:13px; line-height:1.8;">
         <li><strong>Concurrent Connections tier</strong>: classify the peak concurrent HTTP connections against the reference architecture thresholds.</li>
         <li><strong>RPM tier</strong>: classify the peak requests-per-minute against the reference architecture thresholds.</li>
       </ul>
       <p><strong>Step 2 — effective tier</strong> = <code>max(Concurrent Connections tier, RPM tier)</code>. The higher of the two drives the sizing, so whichever dimension is more demanding governs.</p>
-      <p style="margin-top:10px;"><strong>Tier thresholds and replica counts (HA mode)</strong>:</p>
+      <p style="margin-top:10px;"><strong>Tier thresholds and ${r.nodesLabel} count (HA mode)</strong>:</p>
       <table style="margin-top:6px;">
         <thead>
           <tr>
             <th>Tier</th>
             <th>Concurrent Connections</th>
             <th>Requests / min (RPM)</th>
-            <th>Artifactory<br><span style="font-weight:400;font-size:11px;">nodes (HA)</span></th>
-            <th>Nginx<br><span style="font-weight:400;font-size:11px;">nodes (HA)</span></th>
-            <th>Xray<br><span style="font-weight:400;font-size:11px;">nodes (HA)</span></th>
-            <th>RabbitMQ<br><span style="font-weight:400;font-size:11px;">nodes (HA)</span></th>
+            <th>Artifactory<br><span style="font-weight:400;font-size:11px;">${r.nodesLabel} (HA) = licenses</span></th>
+            <th>Nginx<br><span style="font-weight:400;font-size:11px;">${r.nodesLabel} (HA)</span></th>
+            <th>Xray<br><span style="font-weight:400;font-size:11px;">${r.nodesLabel} (HA)</span></th>
+            <th>RabbitMQ<br><span style="font-weight:400;font-size:11px;">${r.nodesLabel} (HA)</span></th>
           </tr>
         </thead>
         <tbody>
@@ -3216,11 +3456,11 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
       </table>
       <div class="notice info" style="margin-top:10px;">
         <strong>Current inputs:</strong> ${r.activeClients.toLocaleString()} concurrent connections (→ <strong>${TIER_LABEL[r.connsTier]}</strong>) &nbsp;·&nbsp; ${r.rpm.toLocaleString()} RPM (→ <strong>${TIER_LABEL[r.rpmTierKey]}</strong>)<br>
-        <strong>Effective tier: ${tierName}</strong>${r.ha ? ` → <strong>${REPLICAS.artifactory[r.tier]} Artifactory node${REPLICAS.artifactory[r.tier] > 1 ? "s" : ""}</strong>` : " → <strong>1 Artifactory node</strong> (HA disabled)"}.
-        ${REPLICAS.artifactory[r.tier] < 4 ? "<br>To reach <strong>4 Artifactory nodes</strong> (XLarge tier), set Concurrent Connections &gt; 1,200 or RPM &gt; 100,000." : ""}
+        <strong>Effective tier: ${tierName}</strong>${r.ha ? ` → <strong>${REPLICAS.artifactory[r.tier]} Artifactory ${r.nodesLabel}</strong> = ${REPLICAS.artifactory[r.tier]} license${REPLICAS.artifactory[r.tier] > 1 ? "s" : ""}` : ` → <strong>1 Artifactory ${r.nodeLabel}</strong> = 1 license (HA disabled)`}.
+        ${REPLICAS.artifactory[r.tier] < 4 ? `<br>To reach <strong>4 Artifactory ${r.nodesLabel}</strong> (XLarge tier, 4 licenses), set Concurrent Connections &gt; 1,200 or RPM &gt; 100,000.` : ""}
       </div>
       <ul style="margin:10px 0 4px; padding-left:20px; font-size:13px; line-height:1.8;">
-        <li>Replica counts above are for HA mode. Single-replica mode always uses 1 node per component regardless of tier.</li>
+        <li>${r.nodesLabel.charAt(0).toUpperCase() + r.nodesLabel.slice(1)} above are for HA mode. Single-${r.nodeLabel} mode always uses 1 ${r.nodeLabel} per component regardless of tier.</li>
         <li>RabbitMQ is only deployed when Xray is enabled and runs on dedicated nodes for HA or &gt;100K indexed artifacts.</li>
         <li>JAS (<strong>VMs</strong>): dedicated servers scaled by artifact volume — 1 node (≤100K), 2 nodes (≤1M), 4 nodes (≤2M), 8 nodes (≤10M). <strong>Kubernetes</strong>: JAS runs within the Xray Helm chart (xray.jas.enabled) — no separate node pool.</li>
         ${r.svc.distribution ? `<li><strong>Distribution</strong>: ${r.deployment === "k8s" ? "separate StatefulSet pod with its own PVC (5 GB non-HA / 20 GB HA), pod limits 1 vCPU / 2 GB" : "co-locates on Artifactory VMs (+2 vCPU / +2 GB / +200 GB per node — no separate VMs)"}.</li>` : ""}

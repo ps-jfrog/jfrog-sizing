@@ -105,6 +105,7 @@
     gap: 8px;
   }
   .radio-group.quad { grid-template-columns: 1fr 1fr; }
+  .radio-group.tri  { grid-template-columns: 1fr 1fr 1fr; }
   .radio-group label {
     display: flex;
     align-items: center;
