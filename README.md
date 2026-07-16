@@ -2,6 +2,8 @@
 
 **Live site:** https://ps-jfrog.github.io/jfrog-sizing/
 
+[![Page visits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fps-jfrog.github.io%2Fjfrog-sizing&count_bg=%2340bf6a&title_bg=%23171a21&title=page+visits&edge_flat=true)](https://ps-jfrog.github.io/jfrog-sizing/)
+
 > **⚠️ Work in Progress — Internal Use Only**
 >
 > This tool is under active development and is intended for **internal JFrog consumption only**. It is **not officially supported by JFrog** and carries no warranty or guarantee of accuracy. It is built and maintained on a best-effort basis by **Professional Services (PS)**. Always validate any sizing output with your JFrog Solutions Engineer before making procurement or architecture decisions.
