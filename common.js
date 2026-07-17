@@ -1993,6 +1993,9 @@ function buildSiteComponents(ctx) {
     xrayEnabled, xrayArtifacts, externalRMQ, externalValkey, dbMode, dbInstances
   } = ctx;
   const prefix = siteNotePrefix ? `${siteNotePrefix} — ` : "";
+  const nl  = deployment === "k8s" ? "replica"  : "node";
+  const nls = deployment === "k8s" ? "replicas" : "nodes";
+  const hostUnit = deployment === "k8s" ? "worker node" : "VM";
 
   function buildRow(key, displayName, opts = {}) {
     const archEntry = arch[key][tier];
@@ -2009,7 +2012,7 @@ function buildSiteComponents(ctx) {
 
   const components = [];
   let artiDisk = STORAGE.artifactory[tier].gb;
-  let artiNote = "Each replica on its own VM (JFrog dedicated-instance rule).";
+  let artiNote = `Each ${nl} on its own ${hostUnit} (JFrog dedicated-instance rule).`;
   let artiExtraCpu = 0, artiExtraMem = 0;
 
   if (svc.distribution) {
@@ -2042,15 +2045,15 @@ function buildSiteComponents(ctx) {
     components.push(buildRow("nginx", "Nginx (reverse proxy / TLS)", {
       storage: { gb: 50, iops: 3000, mbps: 200 },
       note: externalLB
-        ? `Dedicated VM per replica, sitting behind the ${lbDisplay}.`
-        : "Dedicated VM per replica (JFrog rule). Acts as the reverse proxy / TLS terminator."
+        ? `Dedicated ${hostUnit} per ${nl}, sitting behind the ${lbDisplay}.`
+        : `Dedicated ${hostUnit} per ${nl} (JFrog rule). Acts as the reverse proxy / TLS terminator.`
     }));
   }
 
   let externalRmqSpec = null;
   if (xrayEnabled) {
     let xrayName = "Xray", xrayExtraCpu = 0, xrayExtraMemGB = 0, xrayExtraDiskGB = 0;
-    let xrayNote = "Dedicated VM per replica. Index time scales with artifact count.";
+    let xrayNote = `Dedicated ${hostUnit} per ${nl}. Index time scales with artifact count.`;
     if (svc.jas && deployment === "k8s") {
       const jasCpu = xrayArtifacts <= 100000 ? 6 : 8, jasMemGB = 24, jasDiskGB = xrayArtifacts <= 100000 ? 500 : 300;
       xrayExtraCpu = jasCpu; xrayExtraMemGB = jasMemGB; xrayExtraDiskGB = jasDiskGB;
@@ -2575,7 +2578,7 @@ function licenseItems(r) {
   const items = [];
   const add = (name, tier, note) => items.push({ name, tier, note });
   add("Artifactory — core repositories, all package types", "Pro", "Single-node Artifactory is the entry tier.");
-  if (r.ha)             add("High Availability — multi-node Artifactory", "Enterprise X", "HA / multiple Artifactory nodes require Enterprise X or above.");
+  if (r.ha)             add(`High Availability — multi-${r.nodeLabel} Artifactory`, "Enterprise X", `HA / multiple Artifactory ${r.nodesLabel} require Enterprise X or above.`);
   if (r.xrayEnabled)    add("Xray — SCA (security &amp; license scanning)", "Enterprise X", "Included from Enterprise X (also offered as a Pro add-on in some plans).");
   if (r.svc.jas)        add("JFrog Advanced Security (JAS)", "Enterprise X", "Paid <strong>add-on</strong> on top of an Xray-enabled subscription — Secrets, IaC, SAST, Contextual Analysis, etc.");
   if (r.svc.workers)    add("Workers — event-driven automation", "Enterprise X", "Entitlement-gated platform feature — confirm inclusion for your plan.");
@@ -2990,7 +2993,7 @@ function buildLicensePanel(r) {
       </div>
       ${baselineNote ? `<div class="hint" style="margin-top:8px;">${baselineNote}</div>` : ""}
       ${r.biasDelta && r.biasDelta.isOverBaseline ? `<div class="notice info" style="margin-top:10px;"><strong>Sized above load baseline</strong> — effective sizing exceeds what projected load alone requires.${r.sizingBias !== "normal" ? ` ${r.sizingBias === "performance" ? "Performance" : "Resilience"} bias applied.` : ""}</div>` : ""}
-      ${r.biasDelta && r.biasDelta.isUnderBaseline ? `<div class="notice warn" style="margin-top:10px;"><strong>Sized below load baseline</strong> — ${r.licenseMode ? "purchased licenses" : "current settings"} provide fewer Artifactory nodes than projected load implies (${TIER_LABEL[r.loadTier]}). Capacity may be insufficient.</div>` : ""}
+      ${r.biasDelta && r.biasDelta.isUnderBaseline ? `<div class="notice warn" style="margin-top:10px;"><strong>Sized below load baseline</strong> — ${r.licenseMode ? "purchased licenses" : "current settings"} provide fewer Artifactory ${r.nodesLabel} than projected load implies (${TIER_LABEL[r.loadTier]}). Capacity may be insufficient.</div>` : ""}
       <table>
         <thead><tr><th>Product / capability</th><th>Min. subscription</th><th>Notes</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -3072,8 +3075,8 @@ function render(r) {
       <div class="notice ${r.biasDelta.isUnderBaseline ? "warn" : "info"}" style="margin-top:12px;">
         <strong>${r.biasDelta.isUnderBaseline ? "Under" : "Over"}-allocated vs load baseline.</strong>
         ${r.biasDelta.tierDelta !== 0 ? ` Tier: ${TIER_LABEL[r.baseline.tier]} → ${tierName} (${r.biasDelta.tierDelta > 0 ? "+" : ""}${r.biasDelta.tierDelta} step${Math.abs(r.biasDelta.tierDelta) === 1 ? "" : "s"}).` : ""}
-        ${r.biasDelta.activeNodeDelta !== 0 ? ` Primary site: ${r.baseline.activeNodes} → ${licenseCount(r).active} Artifactory node${licenseCount(r).active === 1 ? "" : "s"}.` : ""}
-        ${r.biasDelta.passiveNodeDelta !== 0 ? ` Secondary site: ${r.baseline.passiveNodes} → ${licenseCount(r).passive} Artifactory node${licenseCount(r).passive === 1 ? "" : "s"}.` : ""}
+        ${r.biasDelta.activeNodeDelta !== 0 ? ` Primary site: ${r.baseline.activeNodes} → ${licenseCount(r).active} Artifactory ${licenseCount(r).active === 1 ? r.nodeLabel : r.nodesLabel}.` : ""}
+        ${r.biasDelta.passiveNodeDelta !== 0 ? ` Secondary site: ${r.baseline.passiveNodes} → ${licenseCount(r).passive} Artifactory ${licenseCount(r).passive === 1 ? r.nodeLabel : r.nodesLabel}.` : ""}
         ${r.sizingBias !== "normal" ? ` ${r.sizingBias === "performance" ? "Performance" : "Resilience"} bias influenced this recommendation.` : ""}
       </div>` : ""}
     </div>
@@ -3082,7 +3085,7 @@ function render(r) {
   /* Warnings */
   const warnings = [];
   if (r.licenseMode && TIER_ORDER.indexOf(r.loadTier) > TIER_ORDER.indexOf(r.tier)) {
-    warnings.push({type:"warn", text:`<strong>License capacity:</strong> projected load implies <strong>${TIER_LABEL[r.loadTier]}</strong> (${r.baseline.activeNodes} Artifactory node${r.baseline.activeNodes === 1 ? "" : "s"} per site) but purchased licenses size to <strong>${tierName}</strong>. Consider additional licenses or reduced load projections.`});
+    warnings.push({type:"warn", text:`<strong>License capacity:</strong> projected load implies <strong>${TIER_LABEL[r.loadTier]}</strong> (${r.baseline.activeNodes} Artifactory ${r.baseline.activeNodes === 1 ? r.nodeLabel : r.nodesLabel} per site) but purchased licenses size to <strong>${tierName}</strong>. Consider additional licenses or reduced load projections.`});
   }
   if (r.licenseSnapWarnings && r.licenseSnapWarnings.length) {
     r.licenseSnapWarnings.forEach(msg => warnings.push({type:"warn", text: msg}));
@@ -3101,7 +3104,7 @@ function render(r) {
   } else if (r.licenseMode) {
     const lic = licenseCount(r);
     if (lic.unused > 0) {
-      warnings.push({type:"info", text:`<strong>Unused licenses:</strong> <strong>${lic.unused}</strong> of ${r.licensePurchased} purchased license${r.licensePurchased === 1 ? " is" : "s are"} not assigned to an Artifactory node in this sizing.`});
+      warnings.push({type:"info", text:`<strong>Unused licenses:</strong> <strong>${lic.unused}</strong> of ${r.licensePurchased} purchased license${r.licensePurchased === 1 ? " is" : "s are"} not assigned to an Artifactory ${r.nodeLabel} in this sizing.`});
     }
   }
   if (r.resilienceOverride) {
@@ -3385,14 +3388,14 @@ function render(r) {
     if (r.deployment === "k8s") {
       applied.push(`Distribution runs as a separate StatefulSet pod — own PVC (${r.ha ? 20 : 5} GB per replica), pod limits 1 ${r.cpuLabel} / 2 GB. Not co-located with Artifactory on Kubernetes.`);
     } else {
-      applied.push(`Distribution co-located on Artifactory VMs (+2 ${r.cpuLabel} / +2 GB / +200 GB per node — no separate VMs).`);
+      applied.push(`Distribution co-located on Artifactory VMs (+2 ${r.cpuLabel} / +2 GB / +200 GB per ${r.nodeLabel} — no separate VMs).`);
     }
   }
   if (r.svc.appTrust) {
     if (r.deployment === "k8s") {
       applied.push(`AppTrust + UnifiedPolicy run as separate pods on the Artifactory node pool (${r.ha ? 2 : 1} replica each). Pod limits: AppTrust 1 ${r.cpuLabel} / 2 GB, UnifiedPolicy 0.5 ${r.cpuLabel} / 1 GB — counted in the Artifactory pool capacity total.`);
     } else {
-      applied.push(`AppTrust + UnifiedPolicy co-located on Artifactory VMs (+4 ${r.cpuLabel} / +2 GB / +100 GB per node — no separate VMs).`);
+      applied.push(`AppTrust + UnifiedPolicy co-located on Artifactory VMs (+4 ${r.cpuLabel} / +2 GB / +100 GB per ${r.nodeLabel} — no separate VMs).`);
     }
   }
   if (r.xrayEnabled && r.externalRMQ) {
@@ -3422,9 +3425,9 @@ function render(r) {
     applied.push("Runtime Security deployed as separate releases — a Runtime server (its own 'runtime' DB) plus a per-node sensor DaemonSet (no dedicated nodes). UI integration via runtime.enabled on Artifactory + Xray.");
   }
   if (!r.externalLB) {
-    applied.push("JFrog bundled Nginx provides reverse proxy / TLS termination (dedicated VM/node per replica).");
+    applied.push(`JFrog bundled Nginx provides reverse proxy / TLS termination (dedicated ${r.deployment === "k8s" ? "worker node per replica" : "VM per node"}).`);
   } else if (r.provisionNginx) {
-    applied.push(`${r.lbDisplay} front-ends the platform; Nginx is kept behind it for advanced proxy features (dedicated VM/node per replica).`);
+    applied.push(`${r.lbDisplay} front-ends the platform; Nginx is kept behind it for advanced proxy features (dedicated ${r.deployment === "k8s" ? "worker node per replica" : "VM per node"}).`);
   } else {
     applied.push(`${r.lbDisplay} terminates TLS and routes directly to Artifactory's built-in router — dedicated Nginx tier omitted (no Nginx nodes).`);
   }
@@ -3435,7 +3438,7 @@ function render(r) {
   } else {
     applied.push("Each Artifactory replica on its own dedicated VM (VM model).");
   }
-  applied.push(`Artifactory${r.provisionNginx ? ", Nginx" : ""}, Xray: dedicated VM/node per replica (no co-mingling between these services).`);
+  applied.push(`Artifactory${r.provisionNginx ? ", Nginx" : ""}, Xray: each ${r.nodeLabel} on its own dedicated ${r.deployment === "k8s" ? "worker node" : "VM"} — 1 license = 1 Artifactory ${r.nodeLabel} (no co-mingling between these services).`);
   if (isAP) {
     const scaleDesc = r.passiveScale === "hot" ? "identical replica counts for instant failover" : "1 replica per component (RabbitMQ kept at 3 for quorum), DB at full sizing for fast scale-up";
     applied.push(`<strong>Active-Passive DR topology</strong> — passive site sized as <em>${r.passiveScale === "hot" ? "Active-Standby" : "Warm Standby"}</em>: ${scaleDesc}. Use Artifactory federation / replication for data sync between sites.`);
@@ -3459,7 +3462,7 @@ function render(r) {
           <tr><td><strong>Database disks</strong></td><td>${sc.premium} — Artifactory DB ≈ 1/3 of filestore; Xray DB 500–2500 GB per tier; IOPS 4K–20K</td></tr>
           <tr><td><strong>Binary / artifact backend</strong></td><td><strong>${bs.best.name}</strong> <span class="chip ok">JFrog recommended</span> — sized at <strong>${r.binaryTB} TB</strong>${isMulti ? " per site" : ""}. <span class="hint">binarystore.xml: <code>${bs.best.template}</code>. ${bs.best.note}</span><div class="hint" style="margin-top:4px;">Other options: ${bs.alternatives.map(a => `${a.name} (<code>${a.template}</code>)`).join(" · ")}.</div></td></tr>
           ${r.cacheFsGB > 0 ? `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>${sc.block} — <strong>${fmtGB(r.cacheFsGB)}</strong> local SSD per Artifactory replica (${r.cacheFsPct}% of filestore); fronts ${sc.object} so hot artifacts are served at local-disk latency</td></tr>` : `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>Disabled — every binary read hits ${sc.object} directly. Enable for better performance with object storage.</td></tr>`}
-          <tr><td><strong>Load balancer / ingress</strong></td><td><strong>${r.lbDisplay}</strong> — ${r.externalLB ? (r.provisionNginx ? "Nginx provisioned behind the LB for advanced proxy features." : "no dedicated Nginx tier; the LB terminates TLS and routes to Artifactory's built-in router. On K8s the chart sets nginx.enabled:false and exposes the Artifactory service (LoadBalancer/NodePort or Ingress) for the LB to target.") : "bundled Nginx reverse proxy on a dedicated VM/node per replica."}${r.deployment === "k8s" ? " On K8s, expose it via the cluster ingress / cloud LB service." : ""}${isAP ? " Provide a global/cross-site LB or DNS failover to direct traffic to the active site." : ""}${isAA ? " Provide a global LB / GSLB (geo or weighted DNS) to distribute clients across both active sites." : ""} <span class="hint">Config: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a>${r.externalLB ? ` &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/http-settings" target="_blank">HTTP Settings</a>` : ""}.</span></td></tr>
+          <tr><td><strong>Load balancer / ingress</strong></td><td><strong>${r.lbDisplay}</strong> — ${r.externalLB ? (r.provisionNginx ? "Nginx provisioned behind the LB for advanced proxy features." : "no dedicated Nginx tier; the LB terminates TLS and routes to Artifactory's built-in router. On K8s the chart sets nginx.enabled:false and exposes the Artifactory service (LoadBalancer/NodePort or Ingress) for the LB to target.") : `bundled Nginx reverse proxy on a dedicated ${r.deployment === "k8s" ? "worker node per replica" : "VM per node"}.`}${r.deployment === "k8s" ? " On K8s, expose it via the cluster ingress / cloud LB service." : ""}${isAP ? " Provide a global/cross-site LB or DNS failover to direct traffic to the active site." : ""}${isAA ? " Provide a global LB / GSLB (geo or weighted DNS) to distribute clients across both active sites." : ""} <span class="hint">Config: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a>${r.externalLB ? ` &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/http-settings" target="_blank">HTTP Settings</a>` : ""}.</span></td></tr>
           <tr><td><strong>Network</strong></td><td>${NETWORK_REC[r.cloud]}</td></tr>
           ${r.deployment === "k8s" ? `<tr><td><strong>Kubernetes</strong></td><td>${K8S_NOTES[r.cloud]}</td></tr>` : ""}
         </tbody>
@@ -3618,7 +3621,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
       <p style="margin-top:8px;"><strong>Step 2 — effective sizing mode:</strong></p>
       <ul style="margin:4px 0 10px; padding-left:20px; font-size:13px; line-height:1.8;">
         <li><strong>No license entered:</strong> effective tier = load baseline (Normal bias), or +1 tier (Performance bias), or full passive mirror (Resilience bias on warm A/P).</li>
-        <li><strong>License entered:</strong> licenses are split across sites (balanced, custom, or warm-fixed), optionally skewed by bias, then mapped to per-site Artifactory node counts (1/2/3/4/6). Each site's tier and all component specs cascade from that site's node count.</li>
+        <li><strong>License entered:</strong> licenses are split across sites (balanced, custom, or warm-fixed), optionally skewed by bias, then mapped to per-site Artifactory ${r.nodesLabel} (1/2/3/4/6 — 1 license = 1 Artifactory ${r.nodeLabel}). Each site's tier and all component specs cascade from that site's ${r.nodeLabel} count.</li>
       </ul>
       <p><strong>Step 3 — compare to baseline:</strong> effective sizing is highlighted when it over- or under-allocates vs the load baseline.</p>
       <p style="margin-top:10px;"><strong>Tier thresholds and ${r.nodesLabel} count (HA mode)</strong>:</p>
@@ -3666,10 +3669,10 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
   html += `
     <details style="--link-color:#6dd4a0;">
       <summary>How these numbers are derived</summary>
-      <p><strong>Load baseline tier</strong> = max of concurrent connections tier and RPM tier. When no license is entered, effective tier follows the baseline (with optional Performance/Resilience bias). When licenses are entered, per-site Artifactory node counts drive the effective tier and cascade to all component specs.</p>
+      <p><strong>Load baseline tier</strong> = max of concurrent connections tier and RPM tier. When no license is entered, effective tier follows the baseline (with optional Performance/Resilience bias). When licenses are entered, per-site Artifactory ${r.nodeLabel} counts (1 license = 1 Artifactory ${r.nodeLabel}) drive the effective tier and cascade to all component specs.</p>
       <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/" target="_blank">reference architecture pages</a>. Replicas by tier — Artifactory 1/2/3/4/6, Nginx and Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3. <strong>JAS</strong> deployment differs by model: on <em>VMs</em>, JAS requires dedicated servers scaled by artifact volume — 1 node (≤100K, 6 vCPU/24 GB/500 GB), 2 nodes (≤1M, 8 vCPU/24 GB/300 GB), 4 nodes (≤2M), 8 nodes (≤10M) per the <a href="https://docs.jfrog.com/installation/docs/jfrog-advanced-security-prerequisites" target="_blank">JAS prerequisites table</a>. On <em>Kubernetes</em>, JAS runs within the Xray Helm chart (xray.jas.enabled: true) — no separate node pool; ephemeral scan jobs run on the Xray pool or a tainted sub-pool.</p>
       <p><strong>Storage sizing</strong> (disk, IOPS, throughput) is from the <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/storage/" target="_blank">JFrog storage specification page</a>: Artifactory 500→1000 GB, Xray 100→200 GB, RabbitMQ 100 GB, JAS 300 GB; Artifactory DB = 1/3 of filestore at 4K–20K IOPS; Xray DB 500–2500 GB at 4K–12K IOPS.</p>
-      <p><strong>Co-location (VMs)</strong>: On VMs, Distribution co-locates on each Artifactory host (+2 vCPU / +2 GB / +200 GB per node — those numbers are added to the Artifactory row). AppTrust + UnifiedPolicy also co-locate on Artifactory VMs (+4 vCPU / +2 GB / +100 GB per node). Artifactory, Nginx, and Xray each require a dedicated VM per replica. JAS on VMs requires dedicated servers separate from Xray. RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts.</p>
+      <p><strong>Co-location (VMs)</strong>: On VMs, Distribution co-locates on each Artifactory host (+2 vCPU / +2 GB / +200 GB per node — those numbers are added to the Artifactory row). AppTrust + UnifiedPolicy also co-locate on Artifactory VMs (+4 vCPU / +2 GB / +100 GB per node). Artifactory, Nginx, and Xray each require a dedicated VM per node. JAS on VMs requires dedicated servers separate from Xray. RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts.</p>
       <p><strong>Co-location (Kubernetes)</strong>: On Kubernetes, Distribution is a separate StatefulSet pod with its own PVC (5 GB / 20 GB HA); pod limits 1 vCPU / 2 GB. AppTrust and UnifiedPolicy are separate pods that share the Artifactory node pool (no dedicated pool); their pod limits (AppTrust 1 CPU / 2 GB, UnifiedPolicy 0.5 CPU / 1 GB) are included in the pool capacity total. JAS runs within the Xray Helm chart (no extra node pool). <strong>Mission Control</strong> is bundled into the Artifactory router — no standalone node or database on any deployment model. <strong>Workers</strong> (4 CPU / 4 GB / 50 GB) and <strong>Runtime Security</strong> always get dedicated nodes. Workers and Runtime are not part of the <code>jfrog-platform</code> umbrella chart.</p>
       <p><strong>Onprem</strong>: JFrog does not publish a dedicated onprem sizing table, so this calculator mirrors the cloud CPU/RAM as generic VM sizes.</p>
       <p><strong>VM vs Kubernetes</strong>: capacity numbers are identical — they describe the worker-node footprint either way. On Kubernetes, per-pod <code>requests</code>/<code>limits</code> come from the JFrog Helm chart sizing presets and are typically smaller than the full VM allocation.</p>
