@@ -804,6 +804,8 @@ function buildHelmValues(r) {
     : "SELF-CONTAINED — bundled PostgreSQL + filesystem binarystore."));
   p("# Resources use burstable QoS (requests ≈ 50 %, limits = full tier).");
   p("# Secrets are placeholders. Validate keys: helm show values jfrog/jfrog-platform");
+  p("# PREREQUISITE: pre-create a ServiceAccount named jfrog-sa in the target namespace —");
+  p("#   every product below references it via serviceAccount.create: false.");
   p("");
 
   // ── global ────────────────────────────────────────────────────────────────
@@ -811,24 +813,10 @@ function buildHelmValues(r) {
   p("  masterKeySecretName: jfrog-master-key");
   p("  joinKeySecretName: jfrog-join-key");
   if (external) { p("  database:"); p("    initDBCreation: false"); }
-  if (catalogOn) {
+  if (catalogOn && valkeyBundled) {
     p("  valkey:");
-    if (valkeyBundled) {
-      p('    password: "<valkey-password>"');
-    } else {
-      p('    host: "<valkey-host>"');
-      p("    port: 6379");
-      p('    password: "<valkey-password>"');
-    }
+    p('    password: "<valkey-password>"   # seeds the bundled xray.valkey chart used for Catalog caching');
   }
-  p("  security:");
-  p("    allowPrivilegeEscalation: false");
-  p("    runAsNonRoot: true");
-  p("    seccompProfile:");
-  p("      type: RuntimeDefault");
-  p("    capabilities:");
-  p("      drop:");
-  p("        - ALL");
   p("");
 
   // ── preUpgradeHook (top-level) ────────────────────────────────────────────
@@ -1106,6 +1094,9 @@ function buildHelmValues(r) {
     p("    replicaCount: " + (nginx ? nginx.replicas : 1));
     p("    service:");
     p("      type: ClusterIP");
+    p("    # https.enabled defaults to true — a fresh install FAILS without one of the below.");
+    p('    tlsSecretName: "<tls-secret-name>"   # pre-create: kubectl create secret tls <name> --cert=tls.crt --key=tls.key -n <namespace>');
+    p("    # generateSelfSignedCert: true   # dev/test only, in place of tlsSecretName — not for production");
     p("    resources:");
     p("      requests:");
     p(`        cpu: "${Math.max(1, Math.floor(ngxCpu / 2))}"`);
@@ -1308,11 +1299,6 @@ function buildHelmValues(r) {
   p("      type: RuntimeDefault");
   p("");
 
-  // ── jfconnect ─────────────────────────────────────────────────────────────
-  p("jfconnect:");
-  p("  enabled: true");
-  p("");
-
   // ── xray ──────────────────────────────────────────────────────────────────
   if (r.xrayEnabled) {
     p("xray:");
@@ -1332,7 +1318,7 @@ function buildHelmValues(r) {
       p("  postgresql:");
       p("    enabled: false");
       p("  database:");
-      p("    type: postgres");
+      p("    type: postgresql");
       p('    url: "postgres://<db-host>:5432/xraydb?sslmode=disable"');
       p('    user: "xray"');
       p('    password: "<db-password>"');
@@ -1360,11 +1346,9 @@ function buildHelmValues(r) {
     xSubRes("    ");
     p("  analysis:");
     p(`    replicaCount: ${xrayReplicas}`);
-    p(`    threads: ${xCpu <= 8 ? 2 : 4}`);
     xSubRes("    ");
     p("  indexer:");
     p(`    replicaCount: ${xrayReplicas}`);
-    p(`    threads: ${xCpu <= 8 ? 4 : 8}`);
     xSubRes("    ");
     p("  persist:");
     p("    resources:");
@@ -1379,6 +1363,14 @@ function buildHelmValues(r) {
     p("      requests:");
     p('        cpu: "100m"');
     p('        memory: "1Gi"');
+    p("      limits:");
+    p('        cpu: "1"');
+    p('        memory: "2Gi"');
+    p("  aiscanner:");   // enabled by default upstream (chart ships with resources: {}, unsized) — size it explicitly
+    p("    resources:");
+    p("      requests:");
+    p('        cpu: "250m"');
+    p('        memory: "512Mi"');
     p("      limits:");
     p('        cpu: "1"');
     p('        memory: "2Gi"');
@@ -1421,18 +1413,27 @@ function buildHelmValues(r) {
     p("        - ALL");
     p("    seccompProfile:");
     p("      type: RuntimeDefault");
-    p("  valkey:");
+    p("  valkey:");   // bitnami-style: 1 primary + 2 replicas + Sentinel sidecar (architecture: replication)
     if (valkeyBundled) {
       p("    enabled: true");
-      p("    resources:");
-      p("      requests:");
-      p('        cpu: "100m"');
-      p('        memory: "256Mi"');
-      p("      limits:");
-      p('        cpu: "500m"');
-      p('        memory: "1Gi"');
+      p("    primary:");
+      p("      resources:");
+      p("        requests:");
+      p('          cpu: "100m"');
+      p('          memory: "256Mi"');
+      p("        limits:");
+      p('          cpu: "500m"');
+      p('          memory: "1Gi"');
+      p("    replica:");
+      p("      resources:");
+      p("        requests:");
+      p('          cpu: "100m"');
+      p('          memory: "256Mi"');
+      p("        limits:");
+      p('          cpu: "500m"');
+      p('          memory: "1Gi"');
     } else if (catalogOn) {
-      p("    enabled: false   # EXTERNAL Valkey — see global.valkey above");
+      p("    enabled: false   # EXTERNAL Valkey — see catalog.cache.connectionString below");
     } else {
       p("    enabled: false");
     }
@@ -1460,16 +1461,19 @@ function buildHelmValues(r) {
     p("    create: false");
     p("  cache:");
     p("    enabled: true");
+    if (!valkeyBundled) {
+      p('    connectionString: "redis://<valkey-host>:6379"   # EXTERNAL Valkey (customer-managed) — bundled xray.valkey stays disabled');
+      p('    password: "<valkey-password>"');
+    }
     if (external) {
       p("  database:");
-      p('    url: "jdbc:postgresql://<db-host>:5432/catalog?sslmode=disable"');
+      p('    url: "postgres://<db-host>:5432/catalog?sslmode=disable"');
       p('    user: "catalog"');
       p('    password: "<db-password>"');
     }
     res("  ", catalog ? catalog.cpu : 8, catalog ? Math.max(4, Math.floor((catalog.memGB || 16) * 0.75)) : 8);
     p("  persistence:");
-    p("    enabled: true");
-    p("    size: " + (catalog && catalog.diskGB > 10 ? Math.min(catalog.diskGB, 100) : 10) + "Gi");
+    p("    size: " + (catalog && catalog.diskGB > 10 ? Math.min(catalog.diskGB, 100) : 10) + "Gi   # container storage limit — catalog uses an emptyDir, not a PVC");
     p("  podSecurityContext:");
     p("    enabled: true");
     p("    runAsNonRoot: true");
@@ -1561,13 +1565,10 @@ function buildHelmValues(r) {
     p(`  replicaCount: ${r.ha ? 3 : 1}`);
     p("  rabbitmqUpgradeReady: true");
     p("  auth:");
-    p("    existingPasswordSecret: jfrog-rabbitmq-secret");
-    p("    existingErlangSecret: jfrog-rabbitmq-erlang-secret");
+    p("    existingPasswordSecret: jfrog-rabbitmq-secret   # must contain key: rabbitmq-password");
+    p("    existingErlangSecret: jfrog-rabbitmq-erlang-secret   # must contain key: rabbitmq-erlang-cookie");
     p("  persistence:");
     p("    size: 20Gi");
-    p("  common:");
-    p("    persistence:");
-    p("      size: 20Gi");
     p("  resources:");
     p("    requests:");
     p('      cpu: "250m"');
@@ -1640,8 +1641,7 @@ function buildHelmValues(r) {
     const pgLimCpu = artiDb ? Math.min(artiDb.cpu, 8) : 2;
     const pgLimMem = artiDb ? Math.min(artiDb.memGB, 16) : 4;
     p("  enabled: true");
-    p("  image:");
-    p("    tag: 17.6.0-debian-12-r2");
+    p("  # image: left at chart default — don't pin a tag here, it drifts across chart releases");
     p("  primary:");
     p("    extendedConfiguration: |");
     p(`      max_connections = ${maxConns}`);
