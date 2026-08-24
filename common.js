@@ -2132,16 +2132,19 @@ function buildSiteComponents(ctx) {
   let externalValkeySpec = null;
   if (svc.curation) {
     const proxyVM = arch.nginx[tier].instance;
-    let catalogMem = 16;
+    let catalogCpu = 6, catalogMem = 24, catalogDisk = 500;
     let catalogNote = "Catalog service — metadata store for Curation. Curation itself runs as a feature inside the existing Artifactory + Xray pods (no additional VMs/pods).";
-    if (!externalValkey) { catalogMem += 8; catalogNote += " Valkey co-located on the Catalog nodes (+8 GB RAM, no new VMs)."; }
+    if (!externalValkey) {
+      catalogCpu = 10; catalogMem = 36; catalogDisk = 700;
+      catalogNote += " Valkey bundled/co-located on the Catalog nodes (do not mix bundled and external cache).";
+    }
     components.push({
       name: "Catalog", replicas: ha ? 2 : 1, instance: proxyVM,
-      cpu: 8, memGB: catalogMem, diskGB: 100, iops: 3000, mbps: 500,
+      cpu: catalogCpu, memGB: catalogMem, diskGB: catalogDisk, iops: 3000, mbps: 500,
       note: prefix + catalogNote
     });
     if (externalValkey) {
-      externalValkeySpec = { replicas: ha ? 3 : 1, instance: proxyVM, cpu: 2, memGB: 8, diskGB: 20, iops: 3000, mbps: 200 };
+      externalValkeySpec = { replicas: ha ? 3 : 1, instance: proxyVM, cpu: 4, memGB: 12, diskGB: 200, iops: 3000, mbps: 200 };
     }
   }
 
@@ -3419,7 +3422,7 @@ function render(r) {
   }
   if (r.svc.missionControl) applied.push("Mission Control bundled into Artifactory (platform service on the router) — no standalone node or database.");
   if (r.svc.curation) {
-    applied.push(`Curation is a runtime feature of Artifactory + Xray — no dedicated nodes. Only new infrastructure: Catalog service nodes (with a catalogdb database) and Valkey (${r.externalValkey ? "external — provisioned separately, see below" : "co-located on the Catalog nodes, +8 GB RAM, no new VMs"}).`);
+    applied.push(`Curation is a runtime feature of Artifactory + Xray — no dedicated nodes. Only new infrastructure: Catalog service nodes (with a catalogdb database) and Valkey (${r.externalValkey ? "external — provisioned separately, see below" : "bundled/co-located on the Catalog nodes, no new VMs"}).`);
   }
   if (r.svc.runtime) {
     applied.push("Runtime Security deployed as separate releases — a Runtime server (its own 'runtime' DB) plus a per-node sensor DaemonSet (no dedicated nodes). UI integration via runtime.enabled on Artifactory + Xray.");
