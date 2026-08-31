@@ -197,7 +197,7 @@
     </div>
 
     <div class="field">
-      <label>Optional JFrog services <span class="tip-icon" data-tip="Distribution co-locates on Artifactory (+200 GB, no new VMs). Mission Control is bundled into Artifactory (no separate node or DB). JAS requires Xray; on VMs it adds dedicated servers, on K8s it runs within the Xray pod. Workers add their own nodes per the hardware sizing matrix. AppTrust + UnifiedPolicy co-locate on Artifactory nodes (no dedicated VMs). Curation adds the Catalog service with its own DB and a Valkey cache. Runtime Security adds a Runtime server with its own DB and a per-node sensor DaemonSet.">i</span></label>
+      <label>Optional JFrog services <span class="tip-icon" data-tip="Distribution co-locates on Artifactory (+200 GB, no new VMs). Mission Control is bundled into Artifactory (no separate node or DB). JAS requires Xray; on VMs it adds dedicated servers, on K8s it runs within the Xray pod. Workers add their own nodes per the hardware sizing matrix. AppTrust + UnifiedPolicy co-locate on Artifactory nodes (no dedicated VMs). Curation adds cache-enabled Catalog (Catalog + Valkey) and a catalogdb that can share the Xray PostgreSQL instance. Runtime Security adds a Runtime server with its own DB and a per-node sensor DaemonSet.">i</span></label>
       <div class="checkbox-group">
         <label><input type="checkbox" id="svcDistribution" /> Distribution</label>
         <label><input type="checkbox" id="svcJAS" /> JAS (Advanced Security)</label>
@@ -210,9 +210,9 @@
     </div>
 
     <div class="field" id="valkeyField" style="display:none;">
-      <label>Valkey (Curation / Catalog cache) <span class="tip-icon" data-tip="Only applies when Curation is enabled. Kubernetes: Helm deployed bundles Valkey in the jfrog-platform chart (no separate nodes); External uses a standalone Valkey/Redis cluster outside the Helm chart. Servers: always external.">i</span></label>
+      <label>Catalog cache (Valkey) <span class="tip-icon" data-tip="Cache-enabled Catalog is Catalog plus Valkey. Do not mix bundled and bring-your-own cache. VMs: HA always sizes Valkey as dedicated VMs (3 × 4 CPU / 12 GB / 200 GB) separate from Catalog (2 × 6 CPU / 24 GB / 500 GB) per the Catalog install docs. Combined Catalog+Valkey on one VM (10/36/700) is POC / non-HA only. External is a customer-managed Valkey cluster of the same 4/12/200 spec. Kubernetes: With Catalog deploys Valkey from the Xray Helm sizing preset on block storage (not NFS/EFS); External uses a standalone cluster.">i</span></label>
       <div class="radio-group" data-name="valkey">
-        <label id="valkeyColocatedOption"><input type="radio" name="valkey" value="colocated" checked /> <span id="valkeyColocatedText">Co-located</span></label>
+        <label id="valkeyColocatedOption"><input type="radio" name="valkey" value="colocated" checked /> <span id="valkeyColocatedText">With Catalog</span></label>
         <label><input type="radio" name="valkey" value="external" /> External</label>
       </div>
     </div>
@@ -257,7 +257,8 @@
   <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a> &middot;
   <a href="https://docs.jfrog.com/installation/docs/network-requirements-for-jfrog-products" target="_blank">Network Ports</a> &middot;
   <a href="https://docs.jfrog.com/installation/docs/helm-charts-for-advanced-users" target="_blank">Helm Charts</a> &middot;
-  <a href="https://docs.jfrog.com/installation/docs/installing-catalog" target="_blank">Curation / Catalog</a>.
+  <a href="https://docs.jfrog.com/installation/docs/installing-catalog" target="_blank">Curation / Catalog</a> &middot;
+  <a href="https://github.com/jfrog/charts/tree/master/stable/xray/sizing" target="_blank">Xray Helm sizing</a>.
   Validate with your JFrog SE before procurement.
 </footer>
 
