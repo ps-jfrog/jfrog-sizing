@@ -151,7 +151,7 @@ function buildPassiveFromActive(components, { topology, passiveScale, resilience
     if (aa) {
       copy.note = `Active site B — ${copy.note}`;
     } else if (!useHot) {
-      if (c.name === "RabbitMQ (Xray)") copy.replicas = c.replicas >= 3 ? 3 : 1;
+      if (c.name === "RabbitMQ (Xray)" || c.name === "Valkey") copy.replicas = c.replicas >= 3 ? 3 : 1;
       else if (c.name.startsWith("PostgreSQL")) copy.replicas = c.replicas;
       else copy.replicas = 1;
       copy.note = `Warm standby — ${copy.note}`;
@@ -396,6 +396,68 @@ let STORAGE = {
   xrayDb:        { small:{gb:500, iops:4000, mbps:500 },  medium:{gb:500, iops:6000, mbps:600 },  large:{gb:800, iops:6000, mbps:600}, xlarge:{gb:1000,iops:8000, mbps:1000}, "2xlarge":{gb:2500,iops:12000,mbps:1000} }
 };
 
+// Catalog + Valkey — not scraped (sizing-data.json is rewritten from ref-arch pages).
+// K8s numbers: jfrog/charts stable/xray/sizing (xray-small.yaml … xray-2xlarge.yaml).
+// `cpu` / `memGB` are Helm *limits*, used in the component table and worker plan.
+const K8S_CATALOG = {
+  small:     { reqCpu:"2", reqMem:"4Gi",  limCpu:"4",  limMem:"8Gi",  cpu:4,  memGB:8  },
+  medium:    { reqCpu:"3", reqMem:"6Gi",  limCpu:"6",  limMem:"12Gi", cpu:6,  memGB:12 },
+  large:     { reqCpu:"4", reqMem:"8Gi",  limCpu:"8",  limMem:"16Gi", cpu:8,  memGB:16 },
+  xlarge:    { reqCpu:"5", reqMem:"12Gi", limCpu:"10", limMem:"24Gi", cpu:10, memGB:24 },
+  "2xlarge": { reqCpu:"6", reqMem:"16Gi", limCpu:"12", limMem:"32Gi", cpu:12, memGB:32 }
+};
+const K8S_VALKEY = {
+  small:     { reqCpu:"1", reqMem:"2Gi",  limCpu:"2", limMem:"4Gi",  maxmemory:"2gb",  cpu:2, memGB:4  },
+  medium:    { reqCpu:"1", reqMem:"3Gi",  limCpu:"2", limMem:"6Gi",  maxmemory:"4gb",  cpu:2, memGB:6  },
+  large:     { reqCpu:"2", reqMem:"4Gi",  limCpu:"4", limMem:"8Gi",  maxmemory:"6gb",  cpu:4, memGB:8  },
+  xlarge:    { reqCpu:"2", reqMem:"6Gi",  limCpu:"4", limMem:"12Gi", maxmemory:"9gb",  cpu:4, memGB:12 },
+  "2xlarge": { reqCpu:"4", reqMem:"12Gi", limCpu:"8", limMem:"24Gi", maxmemory:"18gb", cpu:8, memGB:24 }
+};
+const K8S_VALKEY_SENTINEL = { reqCpu:"250m", reqMem:"256Mi", limCpu:"1", limMem:"1Gi" };
+const VALKEY_BLOCK_SC = {
+  aws: "gp3", azure: "managed-csi-premium", gcp: "pd-ssd", onprem: "<block-csi-storageclass>"
+};
+const VALKEY_PVC_GB = 20; // Helm sizing YAMLs do not publish a Valkey disk figure.
+
+// Xray Helm sizing — jfrog/charts stable/xray/sizing (xray-small.yaml … xray-2xlarge.yaml).
+// Replica counts scale horizontally; per-container resources are mostly constant except
+// server/reporting memory limits (6Gi on small, 10Gi from medium up).
+const K8S_XRAY_REPLICA = { small:2, medium:4, large:4, xlarge:7, "2xlarge":7 };
+const K8S_XRAY_RMQ = {
+  small:     { reqCpu:"200m", reqMem:"300Mi", limCpu:"2", limMem:"3Gi", watermark:"2G" },
+  medium:    { reqCpu:"200m", reqMem:"300Mi", limCpu:"2", limMem:"3Gi", watermark:"3G" },
+  large:     { reqCpu:"200m", reqMem:"300Mi", limCpu:"2", limMem:"3Gi", watermark:"3G" },
+  xlarge:    { reqCpu:"200m", reqMem:"500Mi", limCpu:"4", limMem:"5Gi", watermark:"4G" },
+  "2xlarge": { reqCpu:"200m", reqMem:"500Mi", limCpu:"4", limMem:"5Gi", watermark:"6G" }
+};
+function k8sXrayContainers(tier) {
+  const serverLim = tier === "small" ? "6Gi" : "10Gi";
+  const reportingLim = tier === "small" ? "6Gi" : "10Gi";
+  return {
+    analysis:       { reqCpu:"60m",  reqMem:"250Mi", limCpu:"4",    limMem:"10Gi" },
+    indexer:        { reqCpu:"300m", reqMem:"1Gi",   limCpu:"6",    limMem:"8Gi" },
+    persist:        { reqCpu:"60m",  reqMem:"250Mi", limCpu:"4",    limMem:"8Gi" },
+    server:         { reqCpu:"180m", reqMem:"500Mi", limCpu:"4",    limMem: serverLim },
+    router:         { reqCpu:"60m",  reqMem:"100Mi", limCpu:"3",    limMem:"1Gi" },
+    observability:  { reqCpu:"5m",   reqMem:"25Mi",  limCpu:"850m", limMem:"250Mi" },
+    sbom:           { reqCpu:"60m",  reqMem:"250Mi", limCpu:"4",    limMem:"10Gi" },
+    policyenforcer: { reqCpu:"60m",  reqMem:"250Mi", limCpu:"4",    limMem:"8Gi" },
+    aiscanner:      { reqCpu:"30m",  reqMem:"100Mi", limCpu:"2",    limMem:"4Gi" },
+    curation:       { reqCpu:"180m", reqMem:"500Mi", limCpu:"4",    limMem:"6Gi" },
+    jascontextual:  { reqCpu:"1.5",  reqMem:"4Gi",   limCpu:"3.0",  limMem:"16Gi" },
+    jasexposures:   { reqCpu:"1.5",  reqMem:"4Gi",   limCpu:"3.0",  limMem:"16Gi" },
+    reporting:      { reqCpu:"180m", reqMem:"500Mi", limCpu:"4",    limMem: reportingLim },
+    initContainers: { reqCpu:"12m",  reqMem:"50Mi",  limCpu:"250m", limMem:"1Gi" }
+  };
+}
+
+// VM numbers: https://docs.jfrog.com/installation/docs/installing-catalog
+const VM_CATALOG        = { cpu:6,  memGB:24, diskGB:500, iops:3000, mbps:500 };
+const VM_CATALOG_VALKEY = { cpu:10, memGB:36, diskGB:700, iops:3000, mbps:500 };
+const VM_VALKEY         = { cpu:4,  memGB:12, diskGB:200, iops:3000, mbps:200 };
+
+function valkeyHaReplicas(ha) { return ha ? 3 : 1; }
+
 // Co-location rules — verbatim quotes from JFrog reference architecture pages.
 const COLOCATION_RULES = [
   { rule:"Distribution can run on the Artifactory nodes",        relation:"co-locate", components:["Distribution → Artifactory"] },
@@ -404,7 +466,10 @@ const COLOCATION_RULES = [
   { rule:"Each Xray replica should run in its own instance (prefer a dedicated node pool)",        relation:"dedicated", components:["Xray"] },
   { rule:"If running JAS on VMs, dedicated servers are required for JAS (separate from Xray). On Kubernetes, JAS runs within the Xray chart — no separate node pool needed", relation:"dedicated", components:["JAS"] },
   { rule:"For Xray HA / more than 100K indexed artifacts, RabbitMQ and Xray must run on separate servers (split mode)", relation:"dedicated", components:["RabbitMQ", "Xray"] },
-  { rule:"RabbitMQ must be deployed in odd-numbered clusters (1, 3, 5, ...) so quorum queues can elect a majority", relation:"odd-quorum", components:["RabbitMQ"] }
+  { rule:"RabbitMQ must be deployed in odd-numbered clusters (1, 3, 5, ...) so quorum queues can elect a majority", relation:"odd-quorum", components:["RabbitMQ"] },
+  { rule:"Installing Catalog and Valkey on the same VM is supported, but is not recommended for production. Prefer dedicated VMs (or separate Kubernetes pods) for Catalog and Valkey", relation:"dedicated", components:["Catalog", "Valkey"] },
+  { rule:"Catalog HA requires at least two Catalog nodes. Valkey HA is a 3-node specification (odd quorum, same as RabbitMQ)", relation:"odd-quorum", components:["Catalog", "Valkey"] },
+  { rule:"catalogdb can use the same database instance as Xray (separate logical database and user)", relation:"co-locate", components:["Catalog DB → Xray DB"] }
 ];
 
 const STORAGE_CLASS = {
@@ -527,7 +592,7 @@ function buildSizingXlsx(r) {
   if (r.svc.curation) svcList.push("Curation + Catalog");
   if (r.svc.runtime) svcList.push("Runtime Security");
   inputs.push(["Optional services", svcList.join("; ") || "None"]);
-  if (r.svc.curation) inputs.push(["Valkey", r.externalValkey ? "External" : "Co-located"]);
+  if (r.svc.curation) inputs.push(["Valkey", r.externalValkey ? "External" : "With Catalog"]);
   addSheet("Inputs", inputs);
 
   /* ---- Sheet 2: Summary (Aggregate Footprint + Cluster Plan) ---- */
@@ -778,27 +843,22 @@ function buildHelmValues(r) {
     p(indent + `    memory: "${mem}Gi"`);
   };
 
-  // Xray worker sub-components (server / analysis / indexer) — scaled to tier
-  const xCpu = xray ? xray.cpu : 8;
-  const xMem = xray ? xray.memGB : 16;
-  const xSubLimCpu = Math.max(2, Math.floor(xCpu / 3));
-  const xSubLimMem = Math.max(4, Math.floor(xMem / 3));
-  const xSubReqCpu = Math.max(1, Math.floor(xSubLimCpu / 2));
-  const xSubReqMem = Math.max(2, Math.floor(xSubLimMem / 2));
-  const xSubRes = (indent) => {
+  // Exact Helm sizing-preset resources (catalog / valkey / xray containers).
+  const helmRes = (indent, spec) => {
     p(indent + "resources:");
     p(indent + "  requests:");
-    p(indent + `    cpu: "${xSubReqCpu}"`);
-    p(indent + `    memory: "${xSubReqMem}Gi"`);
+    p(indent + `    cpu: "${spec.reqCpu}"`);
+    p(indent + `    memory: ${spec.reqMem}`);
     p(indent + "  limits:");
-    p(indent + `    cpu: "${xSubLimCpu}"`);
-    p(indent + `    memory: "${xSubLimMem}Gi"`);
+    p(indent + `    cpu: "${spec.limCpu}"`);
+    p(indent + `    memory: ${spec.limMem}`);
   };
+
+  const xrayHelm = k8sXrayContainers(r.tier);
 
   // ── Header ────────────────────────────────────────────────────────────────
   p("# JFrog Platform — Helm values for the jfrog/jfrog-platform chart.");
-  p("# Generated by the JFrog Platform Site Sizing Calculator, aligned with jf-k8s/ reference values:");
-  p("#   helm-values-k8s.yaml (bundled)  &  helm-values-k8s-external.yaml (external).");
+  p("# Xray / Catalog / Valkey / RabbitMQ K8s resources from jfrog/charts stable/xray/sizing.");
   p("# MODE: " + (external
     ? "EXTERNAL — external PostgreSQL + object-store binarystore."
     : "SELF-CONTAINED — bundled PostgreSQL + filesystem binarystore."));
@@ -1340,60 +1400,43 @@ function buildHelmValues(r) {
       p("      type: soft");
       p("      topologyKey: kubernetes.io/hostname");
     }
-    // Xray sub-component resource blocks (scaled to tier)
+    // Xray sub-component resources — verbatim from jfrog/charts stable/xray/sizing/xray-<tier>.yaml
     p("  server:");
-    p(`    replicaCount: ${xrayReplicas}`);
-    xSubRes("    ");
+    helmRes("    ", xrayHelm.server);
     p("  analysis:");
-    p(`    replicaCount: ${xrayReplicas}`);
-    xSubRes("    ");
+    helmRes("    ", xrayHelm.analysis);
     p("  indexer:");
-    p(`    replicaCount: ${xrayReplicas}`);
-    xSubRes("    ");
+    helmRes("    ", xrayHelm.indexer);
     p("  persist:");
-    p("    resources:");
-    p("      requests:");
-    p('        cpu: "100m"');
-    p('        memory: "1Gi"');
-    p("      limits:");
-    p('        cpu: "1"');
-    p('        memory: "2Gi"');
+    helmRes("    ", xrayHelm.persist);
     p("  policyenforcer:");
-    p("    resources:");
-    p("      requests:");
-    p('        cpu: "100m"');
-    p('        memory: "1Gi"');
-    p("      limits:");
-    p('        cpu: "1"');
-    p('        memory: "2Gi"');
-    p("  aiscanner:");   // enabled by default upstream (chart ships with resources: {}, unsized) — size it explicitly
-    p("    resources:");
-    p("      requests:");
-    p('        cpu: "250m"');
-    p('        memory: "512Mi"');
-    p("      limits:");
-    p('        cpu: "1"');
-    p('        memory: "2Gi"');
+    helmRes("    ", xrayHelm.policyenforcer);
+    p("  aiscanner:");
+    helmRes("    ", xrayHelm.aiscanner);
     p("  router:");
-    p("    resources:");
-    p("      requests:");
-    p('        cpu: "100m"');
-    p('        memory: "256Mi"');
-    p("      limits:");
-    p('        cpu: "1"');
-    p('        memory: "1Gi"');
+    helmRes("    ", xrayHelm.router);
     p("  observability:");
-    p("    resources:");
-    p("      requests:");
-    p('        cpu: "100m"');
-    p('        memory: "256Mi"');
-    p("      limits:");
-    p('        cpu: "1"');
-    p('        memory: "1Gi"');
+    helmRes("    ", xrayHelm.observability);
+    p("  sbom:");
+    helmRes("    ", xrayHelm.sbom);
+    p("  reporting:");
+    helmRes("    ", xrayHelm.reporting);
+    if (catalogOn) {
+      p("  curation:");
+      helmRes("    ", xrayHelm.curation);
+    }
+    if (jasOn) {
+      p("  jascontextual:");
+      helmRes("    ", xrayHelm.jascontextual);
+      p("  jasexposures:");
+      helmRes("    ", xrayHelm.jasexposures);
+    }
+    p("  initContainers:");
+    helmRes("    ", xrayHelm.initContainers);
     p("  common:");
     p("    persistence:");
     p("      enabled: true");
-    p("      size: " + (xCpu >= 16 ? 20 : 10) + "Gi");
+    p("      size: " + ((xray && xray.cpu >= 16) ? 20 : 10) + "Gi");
     p("  podSecurityContext:");
     p("    enabled: true");
     p("    runAsNonRoot: true");
@@ -1415,23 +1458,39 @@ function buildHelmValues(r) {
     p("      type: RuntimeDefault");
     p("  valkey:");   // bitnami-style: 1 primary + 2 replicas + Sentinel sidecar (architecture: replication)
     if (valkeyBundled) {
+      const vk = K8S_VALKEY[r.tier] || K8S_VALKEY.small;
+      const vkSc = VALKEY_BLOCK_SC[r.cloud] || VALKEY_BLOCK_SC.onprem;
+      const vkHa = r.ha;
       p("    enabled: true");
+      p(`    architecture: ${vkHa ? "replication" : "standalone"}`);
       p("    primary:");
-      p("      resources:");
-      p("        requests:");
-      p('          cpu: "100m"');
-      p('          memory: "256Mi"');
-      p("        limits:");
-      p('          cpu: "500m"');
-      p('          memory: "1Gi"');
-      p("    replica:");
-      p("      resources:");
-      p("        requests:");
-      p('          cpu: "100m"');
-      p('          memory: "256Mi"');
-      p("        limits:");
-      p('          cpu: "500m"');
-      p('          memory: "1Gi"');
+      helmRes("      ", vk);
+      p("      ## Bound the cache below limits.memory so Valkey evicts instead of being OOMKilled.");
+      p("      configuration: |-");
+      p(`        maxmemory ${vk.maxmemory}`);
+      p("        maxmemory-policy allkeys-lru");
+      p("      persistence:");
+      p("        enabled: true");
+      p(`        storageClass: "${vkSc}"   # BLOCK storage only — do not use NFS / EFS / Filestore / network file`);
+      p(`        size: ${VALKEY_PVC_GB}Gi   # Helm xray sizing YAMLs do not publish a Valkey disk figure`);
+      if (vkHa) {
+        p("    replica:");
+        p("      replicaCount: 2   # + primary = 3-node Sentinel HA (same quorum as RabbitMQ)");
+        helmRes("      ", vk);
+        p("      configuration: |-");
+        p(`        maxmemory ${vk.maxmemory}`);
+        p("        maxmemory-policy allkeys-lru");
+        p("      persistence:");
+        p("        enabled: true");
+        p(`        storageClass: "${vkSc}"   # BLOCK storage only — do not use NFS / EFS / Filestore`);
+        p(`        size: ${VALKEY_PVC_GB}Gi`);
+        p("    sentinel:");
+        p("      enabled: true");
+        helmRes("      ", K8S_VALKEY_SENTINEL);
+      } else {
+        p("    sentinel:");
+        p("      enabled: false");
+      }
     } else if (catalogOn) {
       p("    enabled: false   # EXTERNAL Valkey — see catalog.cache.connectionString below");
     } else {
@@ -1471,9 +1530,9 @@ function buildHelmValues(r) {
       p('    user: "catalog"');
       p('    password: "<db-password>"');
     }
-    res("  ", catalog ? catalog.cpu : 8, catalog ? Math.max(4, Math.floor((catalog.memGB || 16) * 0.75)) : 8);
+    helmRes("  ", K8S_CATALOG[r.tier] || K8S_CATALOG.small);
     p("  persistence:");
-    p("    size: " + (catalog && catalog.diskGB > 10 ? Math.min(catalog.diskGB, 100) : 10) + "Gi   # container storage limit — catalog uses an emptyDir, not a PVC");
+    p("    size: 10Gi   # container storage limit — catalog uses an emptyDir, not a PVC");
     p("  podSecurityContext:");
     p("    enabled: true");
     p("    runAsNonRoot: true");
@@ -1562,6 +1621,7 @@ function buildHelmValues(r) {
   p("rabbitmq:");
   p("  enabled: " + (rmqBundled ? "true" : "false" + (r.externalRMQ ? "   # external RabbitMQ — wired via extraSystemYaml" : "")));
   if (rmqBundled) {
+    const rmqHelm = K8S_XRAY_RMQ[r.tier] || K8S_XRAY_RMQ.small;
     p(`  replicaCount: ${r.ha ? 3 : 1}`);
     p("  rabbitmqUpgradeReady: true");
     p("  auth:");
@@ -1569,13 +1629,9 @@ function buildHelmValues(r) {
     p("    existingErlangSecret: jfrog-rabbitmq-erlang-secret   # must contain key: rabbitmq-erlang-cookie");
     p("  persistence:");
     p("    size: 20Gi");
-    p("  resources:");
-    p("    requests:");
-    p('      cpu: "250m"');
-    p('      memory: "512Mi"');
-    p("    limits:");
-    p('      cpu: "1"');
-    p('      memory: "2Gi"');
+    p("  extraConfiguration: |-");
+    p(`    vm_memory_high_watermark.absolute = ${rmqHelm.watermark}`);
+    helmRes("  ", rmqHelm);
     p("  podSecurityContext:");
     p("    enabled: true");
     p("    runAsNonRoot: true");
@@ -1717,10 +1773,13 @@ function buildAnsibleInventory(r) {
   if (r.xrayEnabled && !r.externalRMQ && rmq) group("rabbitmq_servers", rmq, rmq.replicas);
   if (r.svc.curation && catalog) {
     group("catalog_servers", catalog, catalog.replicas);
-    if (r.externalValkey) {
-      const catReplicas = r.ha ? 3 : 1;
-      L.push("[valkey_servers]   # " + catReplicas + " node(s) — external Valkey (separate from Catalog)");
-      for (let i = 1; i <= catReplicas; i++) L.push("valkey-" + i + " ansible_host=<ip-" + i + ">");
+    const vkComp = findComp(r, "Valkey");
+    if (vkComp) {
+      group("valkey_servers", vkComp, vkComp.replicas);
+    } else if (r.externalValkey) {
+      const vkN = (r.externalValkeySpec && r.externalValkeySpec.replicas) || valkeyHaReplicas(r.ha);
+      L.push("[valkey_servers]   # " + vkN + " node(s) — external Valkey (separate from Catalog, 3-node HA)");
+      for (let i = 1; i <= vkN; i++) L.push("valkey-" + i + " ansible_host=<ip-" + i + ">");
       L.push("");
     }
   }
@@ -1731,6 +1790,7 @@ function buildAnsibleInventory(r) {
   if (r.provisionNginx) L.push("nginx_servers");
   if (r.xrayEnabled) L.push("xray_servers");
   if (r.svc.curation) L.push("catalog_servers");
+  if (r.svc.curation && (findComp(r, "Valkey") || r.externalValkey)) L.push("valkey_servers");
   if (r.svc.runtime) L.push("runtime_servers");
   return L.join("\n");
 }
@@ -1881,7 +1941,7 @@ function buildAnsiblePlaybook(r) {
     L.push("  vars:");
     L.push('    catalog_version: "3.x.x"');
     L.push('    install_root: /opt/jfrog/catalog');
-    L.push('    valkey_host: "' + (r.externalValkey ? "<valkey-host>" : "{{ groups['catalog_servers'][0] }}") + '"');
+    L.push('    valkey_host: "' + (findComp(r, "Valkey") || r.externalValkey ? "{{ groups['valkey_servers'][0] | default('<valkey-host>') }}" : "{{ groups['catalog_servers'][0] }}") + '"');
     L.push("  tasks:");
     L.push("    - name: Download & unpack Catalog");
     L.push("      ansible.builtin.unarchive:");
@@ -2052,21 +2112,22 @@ function buildSiteComponents(ctx) {
 
   let externalRmqSpec = null;
   if (xrayEnabled) {
-    let xrayName = "Xray", xrayExtraCpu = 0, xrayExtraMemGB = 0, xrayExtraDiskGB = 0;
+    const helmXrayReplicas = ha ? (K8S_XRAY_REPLICA[tier] || 2) : 1;
+    let xrayName = "Xray";
     let xrayNote = `Dedicated ${hostUnit} per ${nl}. Index time scales with artifact count.`;
-    if (svc.jas && deployment === "k8s") {
-      const jasCpu = xrayArtifacts <= 100000 ? 6 : 8, jasMemGB = 24, jasDiskGB = xrayArtifacts <= 100000 ? 500 : 300;
-      xrayExtraCpu = jasCpu; xrayExtraMemGB = jasMemGB; xrayExtraDiskGB = jasDiskGB;
-      xrayName = "Xray + JAS";
-      xrayNote = `JAS runs inside the Xray pod (extraSystemYaml.jas.enabled: true) — no separate JAS node pool on K8s. JAS overhead per replica: +${jasCpu} ${cpuLabel} / +${jasMemGB} GB RAM / +${jasDiskGB} GB disk. Ephemeral scanner jobs (exposuresscannersjob etc.) need additional node headroom — see Notes &amp; warnings.`;
+    if (deployment === "k8s") {
+      xrayNote = `K8s replica count ${helmXrayReplicas} from the Xray Helm sizing preset (xray-${tier}.yaml). Worker node SKU from the JFrog reference architecture; container requests/limits in values.yaml match that YAML.`;
+      if (svc.jas) {
+        xrayName = "Xray + JAS";
+        xrayNote = `JAS runs inside the Xray Helm release (jascontextual / jasexposures from xray-${tier}.yaml: 3 CPU / 16Gi limits each). Replica count ${helmXrayReplicas}. No separate JAS node pool. Ephemeral scanner jobs need additional node headroom — see Notes &amp; warnings.`;
+      }
     }
-    const xrayBaseArch = arch.xray[tier], xrayBaseStor = STORAGE.xray[tier];
-    const xrayRow = buildRow("xray", xrayName, {
-      storage: { gb: xrayBaseStor.gb + xrayExtraDiskGB, iops: xrayBaseStor.iops, mbps: xrayBaseStor.mbps },
+    const xrayBaseStor = STORAGE.xray[tier];
+    components.push(buildRow("xray", xrayName, {
+      forceReplicas: deployment === "k8s" ? helmXrayReplicas : undefined,
+      storage: { gb: xrayBaseStor.gb, iops: xrayBaseStor.iops, mbps: xrayBaseStor.mbps },
       note: xrayNote
-    });
-    if (xrayExtraCpu > 0) { xrayRow.cpu = xrayBaseArch.cpu + xrayExtraCpu; xrayRow.memGB = xrayBaseArch.memGB + xrayExtraMemGB; }
-    components.push(xrayRow);
+    }));
     const oddify = n => (n <= 1 ? n : (n % 2 === 0 ? n + 1 : n));
     const rmqBase = ha ? REPLICAS.rabbitmq[tier] : (xrayArtifacts > 100000 ? 3 : 1);
     const rmqReplicas = oddify(rmqBase);
@@ -2132,19 +2193,69 @@ function buildSiteComponents(ctx) {
   let externalValkeySpec = null;
   if (svc.curation) {
     const proxyVM = arch.nginx[tier].instance;
-    let catalogCpu = 6, catalogMem = 24, catalogDisk = 500;
-    let catalogNote = "Catalog service — metadata store for Curation. Curation itself runs as a feature inside the existing Artifactory + Xray pods (no additional VMs/pods).";
-    if (!externalValkey) {
-      catalogCpu = 10; catalogMem = 36; catalogDisk = 700;
-      catalogNote += " Valkey bundled/co-located on the Catalog nodes (do not mix bundled and external cache).";
-    }
-    components.push({
-      name: "Catalog", replicas: ha ? 2 : 1, instance: proxyVM,
-      cpu: catalogCpu, memGB: catalogMem, diskGB: catalogDisk, iops: 3000, mbps: 500,
-      note: prefix + catalogNote
-    });
-    if (externalValkey) {
-      externalValkeySpec = { replicas: ha ? 3 : 1, instance: proxyVM, cpu: 4, memGB: 12, diskGB: 200, iops: 3000, mbps: 200 };
+    const vkReplicas = valkeyHaReplicas(ha);
+    const catK8s = K8S_CATALOG[tier] || K8S_CATALOG.small;
+    const vkK8s  = K8S_VALKEY[tier] || K8S_VALKEY.small;
+    const cacheNote = "Cache-enabled Catalog (Valkey). Curation itself runs as a feature inside Artifactory + Xray. Do not mix bundled and bring-your-own cache.";
+    if (deployment === "k8s") {
+      components.push({
+        name: "Catalog", replicas: ha ? 2 : 1,
+        instance: `worker ${catK8s.cpu} ${cpuLabel} / ${catK8s.memGB} GB`,
+        cpu: catK8s.cpu, memGB: catK8s.memGB, diskGB: 10, iops: 3000, mbps: 200,
+        note: prefix + `${cacheNote} Pod limits from the Xray Helm sizing preset (xray-${tier}.yaml). Catalog uses emptyDir, not a PVC.`
+      });
+      if (externalValkey) {
+        externalValkeySpec = {
+          replicas: vkReplicas, instance: proxyVM,
+          cpu: VM_VALKEY.cpu, memGB: VM_VALKEY.memGB, diskGB: VM_VALKEY.diskGB,
+          iops: VM_VALKEY.iops, mbps: VM_VALKEY.mbps
+        };
+      } else {
+        components.push({
+          name: "Valkey", replicas: vkReplicas,
+          instance: `worker ${vkK8s.cpu} ${cpuLabel} / ${vkK8s.memGB} GB`,
+          cpu: vkK8s.cpu, memGB: vkK8s.memGB, diskGB: VALKEY_PVC_GB, iops: 3000, mbps: 200,
+          note: prefix + `Helm-deployed Catalog cache (Sentinel). Persist on block storage only — not NFS/EFS/Filestore. ${vkReplicas >= 3 ? "3-node HA quorum (same as RabbitMQ)." : "Single replica — no failover."}`
+        });
+      }
+    } else if (externalValkey) {
+      components.push({
+        name: "Catalog", replicas: ha ? 2 : 1,
+        instance: `VM ${VM_CATALOG.cpu} ${cpuLabel} / ${VM_CATALOG.memGB} GB`,
+        cpu: VM_CATALOG.cpu, memGB: VM_CATALOG.memGB, diskGB: VM_CATALOG.diskGB,
+        iops: VM_CATALOG.iops, mbps: VM_CATALOG.mbps,
+        note: prefix + `${cacheNote} Standalone Catalog VM (${VM_CATALOG.cpu} ${cpuLabel} / ${VM_CATALOG.memGB} GB / ${VM_CATALOG.diskGB} GB) per the Catalog install docs.`
+      });
+      externalValkeySpec = {
+        replicas: vkReplicas,
+        instance: `VM ${VM_VALKEY.cpu} ${cpuLabel} / ${VM_VALKEY.memGB} GB`,
+        cpu: VM_VALKEY.cpu, memGB: VM_VALKEY.memGB, diskGB: VM_VALKEY.diskGB,
+        iops: VM_VALKEY.iops, mbps: VM_VALKEY.mbps
+      };
+    } else if (ha) {
+      // Production HA: isolated Catalog VMs + dedicated Valkey VMs (Catalog install docs).
+      components.push({
+        name: "Catalog", replicas: 2,
+        instance: `VM ${VM_CATALOG.cpu} ${cpuLabel} / ${VM_CATALOG.memGB} GB`,
+        cpu: VM_CATALOG.cpu, memGB: VM_CATALOG.memGB, diskGB: VM_CATALOG.diskGB,
+        iops: VM_CATALOG.iops, mbps: VM_CATALOG.mbps,
+        note: prefix + `${cacheNote} Standalone Catalog VM (${VM_CATALOG.cpu} ${cpuLabel} / ${VM_CATALOG.memGB} GB / ${VM_CATALOG.diskGB} GB). HA requires ≥2 Catalog nodes — Valkey runs on dedicated VMs (see Valkey row).`
+      });
+      components.push({
+        name: "Valkey", replicas: vkReplicas,
+        instance: `VM ${VM_VALKEY.cpu} ${cpuLabel} / ${VM_VALKEY.memGB} GB`,
+        cpu: VM_VALKEY.cpu, memGB: VM_VALKEY.memGB, diskGB: VM_VALKEY.diskGB,
+        iops: VM_VALKEY.iops, mbps: VM_VALKEY.mbps,
+        note: prefix + `Dedicated Valkey VM (${VM_VALKEY.cpu} ${cpuLabel} / ${VM_VALKEY.memGB} GB / ${VM_VALKEY.diskGB} GB) per the Catalog install docs. ${vkReplicas >= 3 ? "3-node HA cluster (odd quorum, same as RabbitMQ) — separate from Catalog; production best practice." : "Single node — no failover."}`
+      });
+    } else {
+      components.push({
+        name: "Catalog", replicas: 1,
+        instance: `VM ${VM_CATALOG_VALKEY.cpu} ${cpuLabel} / ${VM_CATALOG_VALKEY.memGB} GB`,
+        cpu: VM_CATALOG_VALKEY.cpu, memGB: VM_CATALOG_VALKEY.memGB, diskGB: VM_CATALOG_VALKEY.diskGB,
+        iops: VM_CATALOG_VALKEY.iops, mbps: VM_CATALOG_VALKEY.mbps,
+        note: prefix + `${cacheNote} Combined Catalog+Valkey VM (${VM_CATALOG_VALKEY.cpu} ${cpuLabel} / ${VM_CATALOG_VALKEY.memGB} GB / ${VM_CATALOG_VALKEY.diskGB} GB) — POC / small-scale only; not recommended for production. Enable HA to size dedicated Valkey VMs.`
+      });
     }
   }
 
@@ -2267,16 +2378,13 @@ function toggleConditionalFields() {
 
   const isVm = deployment === "vm";
 
-  // Valkey: Servers always use external Valkey; K8s bundles it in the Helm chart
-  // ("Helm deployed") or externalises it. Relabel the co-located option accordingly.
+  // Catalog cache (Valkey): bundled (dedicated HA VMs / combined POC / Helm) or External.
   const valkeyColocatedOption = document.getElementById("valkeyColocatedOption");
   if (valkeyColocatedOption) {
-    if (isVm) {
-      valkeyColocatedOption.style.display = "none";
-      document.querySelector('input[name="valkey"][value="external"]').checked = true;
-    } else {
-      valkeyColocatedOption.style.display = "";
-      document.getElementById("valkeyColocatedText").textContent = "Helm deployed";
+    valkeyColocatedOption.style.display = "";
+    const valkeyColocatedText = document.getElementById("valkeyColocatedText");
+    if (valkeyColocatedText) {
+      valkeyColocatedText.textContent = isVm ? "With Catalog" : "With Catalog (Helm)";
     }
   }
 
@@ -2331,8 +2439,8 @@ function calculate() {
     runtime:        document.getElementById("svcRuntime").checked
   };
 
-  // Valkey (Curation/Catalog cache). Co-located folds onto the Catalog nodes;
-  // external removes it from the footprint and a recommended spec/config is shown.
+  // Valkey (cache-enabled Catalog). With Catalog = combined VM / Helm-deployed;
+  // external is a dedicated 3-node HA cluster (same quorum rule as RabbitMQ).
   const valkeyMode    = document.querySelector('input[name="valkey"]:checked').value; // colocated | external
   const externalValkey = valkeyMode === "external";
 
@@ -3063,8 +3171,8 @@ function render(r) {
         <span class="chip ok">LB: ${r.lbDisplay}</span>
         ${r.externalLB && !r.provisionNginx ? `<span class="chip warn">No Nginx tier</span>` : ""}
         ${r.externalRMQ && r.xrayEnabled ? `<span class="chip warn">External RabbitMQ</span>` : ""}
-        ${r.svc.curation ? `<span class="chip ok">Curation + Catalog</span>` : ""}
-        ${r.svc.curation && r.externalValkey ? `<span class="chip warn">External Valkey</span>` : ""}
+        ${r.svc.curation ? `<span class="chip ok">Cache-enabled Catalog (Valkey)</span>` : ""}
+        ${r.svc.curation && r.externalValkey ? `<span class="chip warn">External Valkey</span>` : r.svc.curation ? `<span class="chip ok">Valkey with Catalog</span>` : ""}
         ${isAP ? `<span class="chip warn">Passive: ${r.passiveScale === "hot" ? "Active-Standby" : "Warm Standby"}</span>` : ""}
         ${isAA ? `<span class="chip warn">Active-Active (2 sites)</span>` : ""}
       </div>
@@ -3422,7 +3530,15 @@ function render(r) {
   }
   if (r.svc.missionControl) applied.push("Mission Control bundled into Artifactory (platform service on the router) — no standalone node or database.");
   if (r.svc.curation) {
-    applied.push(`Curation is a runtime feature of Artifactory + Xray — no dedicated nodes. Only new infrastructure: Catalog service nodes (with a catalogdb database) and Valkey (${r.externalValkey ? "external — provisioned separately, see below" : "bundled/co-located on the Catalog nodes, no new VMs"}).`);
+    if (r.deployment === "k8s") {
+      applied.push(`Cache-enabled Catalog (Valkey): Catalog pods sized from the Xray Helm sizing preset. Valkey is ${r.externalValkey ? `external (${r.ha ? "3-node HA" : "single node"}, not in the footprint)` : `Helm-deployed (${r.ha ? "3-node Sentinel HA" : "single replica"}) and must persist on <strong>block</strong> storage — not NFS/EFS/Filestore`}. <code>catalogdb</code> can share the Xray PostgreSQL instance (separate logical DB and user).`);
+    } else if (r.externalValkey) {
+      applied.push(`Cache-enabled Catalog with external Valkey: standalone Catalog ${r.ha ? 2 : 1} VM(s) (6 ${r.cpuLabel} / 24 GB / 500 GB) plus dedicated Valkey ${valkeyHaReplicas(r.ha)} VM(s) (4 ${r.cpuLabel} / 12 GB / 200 GB${r.ha ? ", 3-node HA quorum" : ""}). <code>catalogdb</code> can share the Xray PostgreSQL instance.`);
+    } else if (r.ha) {
+      applied.push(`Production VM topology (Catalog install docs): Catalog on dedicated VMs (2 × 6 ${r.cpuLabel} / 24 GB / 500 GB) and Valkey on <strong>separate</strong> VMs (3 × 4 ${r.cpuLabel} / 12 GB / 200 GB, odd quorum). Combined Catalog+Valkey on one VM is not used for HA. <code>catalogdb</code> can share the Xray PostgreSQL instance.`);
+    } else {
+      applied.push(`Cache-enabled Catalog (Valkey) combined on one VM (10 ${r.cpuLabel} / 36 GB / 700 GB) — POC / small-scale only, <strong>not recommended for production</strong>. Enable HA to size dedicated Valkey VMs. <code>catalogdb</code> can share the Xray PostgreSQL instance.`);
+    }
   }
   if (r.svc.runtime) {
     applied.push("Runtime Security deployed as separate releases — a Runtime server (its own 'runtime' DB) plus a per-node sensor DaemonSet (no dedicated nodes). UI integration via runtime.enabled on Artifactory + Xray.");
@@ -3465,6 +3581,9 @@ function render(r) {
           <tr><td><strong>Database disks</strong></td><td>${sc.premium} — Artifactory DB ≈ 1/3 of filestore; Xray DB 500–2500 GB per tier; IOPS 4K–20K</td></tr>
           <tr><td><strong>Binary / artifact backend</strong></td><td><strong>${bs.best.name}</strong> <span class="chip ok">JFrog recommended</span> — sized at <strong>${r.binaryTB} TB</strong>${isMulti ? " per site" : ""}. <span class="hint">binarystore.xml: <code>${bs.best.template}</code>. ${bs.best.note}</span><div class="hint" style="margin-top:4px;">Other options: ${bs.alternatives.map(a => `${a.name} (<code>${a.template}</code>)`).join(" · ")}.</div></td></tr>
           ${r.cacheFsGB > 0 ? `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>${sc.block} — <strong>${fmtGB(r.cacheFsGB)}</strong> local SSD per Artifactory replica (${r.cacheFsPct}% of filestore); fronts ${sc.object} so hot artifacts are served at local-disk latency</td></tr>` : `<tr><td><strong>Cache-fs (binary cache)</strong></td><td>Disabled — every binary read hits ${sc.object} directly. Enable for better performance with object storage.</td></tr>`}
+          ${r.svc.curation && r.deployment === "k8s" && !r.externalValkey ? `<tr><td><strong>Valkey cache (block)</strong></td><td>${sc.block} — <strong>${VALKEY_PVC_GB} Gi</strong> PVC per Valkey pod. Use a <strong>block</strong> StorageClass (<code>${VALKEY_BLOCK_SC[r.cloud]}</code>) — not NFS, EFS, Filestore, or any network-file volume. Helm Xray sizing files do not publish a Valkey disk figure.</td></tr>` : ""}
+          ${r.svc.curation && r.deployment === "vm" && !r.externalValkey && !r.ha ? `<tr><td><strong>Catalog + Valkey disk</strong></td><td>${sc.block} — <strong>700 GB</strong> local SSD on the combined Catalog+Valkey VM (POC only; Catalog install docs).</td></tr>` : ""}
+          ${r.svc.curation && r.deployment === "vm" && (r.externalValkey || r.ha) ? `<tr><td><strong>Catalog / Valkey disks</strong></td><td>${sc.block} — standalone Catalog <strong>500 GB</strong> per VM; dedicated Valkey <strong>200 GB</strong> per VM (4 ${r.cpuLabel} / 12 GB). HA Valkey is a separate 3-node cluster.</td></tr>` : ""}
           <tr><td><strong>Load balancer / ingress</strong></td><td><strong>${r.lbDisplay}</strong> — ${r.externalLB ? (r.provisionNginx ? "Nginx provisioned behind the LB for advanced proxy features." : "no dedicated Nginx tier; the LB terminates TLS and routes to Artifactory's built-in router. On K8s the chart sets nginx.enabled:false and exposes the Artifactory service (LoadBalancer/NodePort or Ingress) for the LB to target.") : `bundled Nginx reverse proxy on a dedicated ${r.deployment === "k8s" ? "worker node per replica" : "VM per node"}.`}${r.deployment === "k8s" ? " On K8s, expose it via the cluster ingress / cloud LB service." : ""}${isAP ? " Provide a global/cross-site LB or DNS failover to direct traffic to the active site." : ""}${isAA ? " Provide a global LB / GSLB (geo or weighted DNS) to distribute clients across both active sites." : ""} <span class="hint">Config: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a>${r.externalLB ? ` &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/http-settings" target="_blank">HTTP Settings</a>` : ""}.</span></td></tr>
           <tr><td><strong>Network</strong></td><td>${NETWORK_REC[r.cloud]}</td></tr>
           ${r.deployment === "k8s" ? `<tr><td><strong>Kubernetes</strong></td><td>${K8S_NOTES[r.cloud]}</td></tr>` : ""}
@@ -3481,7 +3600,7 @@ function render(r) {
     const dbs = [{ svc:"Artifactory", db:"artifactory", user:"artifactory", note:"Core platform metadata — always required." }];
     if (r.xrayEnabled) dbs.push({ svc:`Xray${r.svc.jas ? " + JAS" : ""}`, db:"xraydb", user:"xray", note:`Scan results & component graph.${r.svc.jas ? " JAS shares the Xray database — no separate DB." : ""}` });
     if (r.svc.distribution) dbs.push({ svc:"Distribution", db:"distribution", user:"distribution", note:"Release-bundle metadata." });
-    if (r.svc.curation) dbs.push({ svc:"Catalog (Curation)", db:"catalogdb", user:"catalog", note:"Package-metadata catalog for Curation." });
+    if (r.svc.curation) dbs.push({ svc:"Catalog (Curation)", db:"catalogdb", user:"catalog", note:"Package-metadata catalog for Curation. Can share the Xray PostgreSQL instance (separate logical DB and user) — do not add a second instance unless Database instances is Dedicated." });
     if (r.svc.runtime) dbs.push({ svc:"Runtime Security", db:"runtime", user:"runtime", note:"Runtime server data (separate jfrog/runtime release)." });
 
     const newer = [];
@@ -3589,7 +3708,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
       <ul style="margin:4px 0 10px; padding-left:20px; color:var(--muted); font-size:13px; line-height:1.7;">
         <li><strong>Engine:</strong> Valkey (or a compatible Redis ≥ 7) — a managed option (ElastiCache / Azure Cache for Redis / Memorystore) works too. Match the version in the Catalog system requirements.</li>
         <li><strong>Memory:</strong> set <code>maxmemory</code> to ~75% of node RAM with <code>maxmemory-policy allkeys-lru</code>; the cache grows with the size of the indexed package catalog.</li>
-        <li><strong>HA:</strong> deploy an <strong>odd</strong> number of nodes (3/5) with Sentinel, or use cluster mode; expose a single endpoint to Catalog.</li>
+        <li><strong>HA:</strong> deploy a <strong>3-node</strong> Sentinel cluster (same odd-quorum rule as RabbitMQ), or use cluster mode; expose a single endpoint to Catalog.</li>
         <li><strong>Persistence:</strong> the Catalog cache is rebuildable — RDB snapshots are usually enough; enable AOF only if you want faster warm restarts.</li>
         <li><strong>Ports:</strong> <code>6379</code> (Valkey/Redis), <code>6380</code> (TLS), <code>16379</code> (cluster bus) and <code>26379</code> (Sentinel) between Catalog ↔ Valkey and between Valkey nodes.</li>
         <li><strong>Auth/TLS:</strong> set <code>requirepass</code> (or ACL users) and terminate TLS on <code>6380</code> with CA-signed certs.</li>
@@ -3601,7 +3720,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
     password: "&lt;password&gt;"</blockquote>
         </li>
       </ul>
-      <div class="hint">Reference: <a href="https://docs.jfrog.com/installation/docs/installing-catalog" target="_blank">JFrog Curation</a> &middot; <a href="https://valkey.io/topics/" target="_blank">Valkey operations</a>.</div>
+      <div class="hint">Reference: <a href="https://docs.jfrog.com/installation/docs/installing-catalog" target="_blank">Catalog Installation</a> (VM specs) &middot; <a href="https://github.com/jfrog/charts/tree/master/stable/xray/sizing" target="_blank">Xray Helm sizing</a> (K8s Catalog/Valkey) &middot; <a href="https://valkey.io/topics/" target="_blank">Valkey operations</a>.</div>
     </details>
   `;
   }
@@ -3664,6 +3783,7 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
         <li>RabbitMQ is only deployed when Xray is enabled and runs on dedicated nodes for HA or &gt;100K indexed artifacts.</li>
         <li>JAS (<strong>VMs</strong>): dedicated servers scaled by artifact volume — 1 node (≤100K), 2 nodes (≤1M), 4 nodes (≤2M), 8 nodes (≤10M). <strong>Kubernetes</strong>: JAS runs within the Xray Helm chart (xray.jas.enabled) — no separate node pool.</li>
         ${r.svc.distribution ? `<li><strong>Distribution</strong>: ${r.deployment === "k8s" ? "separate StatefulSet pod with its own PVC (5 GB non-HA / 20 GB HA), pod limits 1 vCPU / 2 GB" : "co-locates on Artifactory VMs (+2 vCPU / +2 GB / +200 GB per node — no separate VMs)"}.</li>` : ""}
+        ${r.svc.curation ? `<li><strong>Cache-enabled Catalog (Valkey)</strong>: ${r.deployment === "k8s" ? "pod limits from the Xray Helm sizing YAMLs; Valkey HA is 3-node Sentinel on block storage" : "VM specs from the Catalog install docs — HA uses dedicated Valkey VMs (3 × 4 CPU / 12 GB / 200 GB) separate from Catalog (2 × 6 CPU / 24 GB / 500 GB); combined 10/36/700 is POC / non-HA only"}.</li>` : ""}
       </ul>
     </details>
   `;
@@ -3673,10 +3793,11 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
     <details style="--link-color:#6dd4a0;">
       <summary>How these numbers are derived</summary>
       <p><strong>Load baseline tier</strong> = max of concurrent connections tier and RPM tier. When no license is entered, effective tier follows the baseline (with optional Performance/Resilience bias). When licenses are entered, per-site Artifactory ${r.nodeLabel} counts (1 license = 1 Artifactory ${r.nodeLabel}) drive the effective tier and cascade to all component specs.</p>
-      <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/" target="_blank">reference architecture pages</a>. Replicas by tier — Artifactory 1/2/3/4/6, Nginx and Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3. <strong>JAS</strong> deployment differs by model: on <em>VMs</em>, JAS requires dedicated servers scaled by artifact volume — 1 node (≤100K, 6 vCPU/24 GB/500 GB), 2 nodes (≤1M, 8 vCPU/24 GB/300 GB), 4 nodes (≤2M), 8 nodes (≤10M) per the <a href="https://docs.jfrog.com/installation/docs/jfrog-advanced-security-prerequisites" target="_blank">JAS prerequisites table</a>. On <em>Kubernetes</em>, JAS runs within the Xray Helm chart (xray.jas.enabled: true) — no separate node pool; ephemeral scan jobs run on the Xray pool or a tainted sub-pool.</p>
+      <p><strong>Per-cloud instance types &amp; replica counts</strong> are verbatim from JFrog's <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/" target="_blank">reference architecture pages</a> for VMs. Replicas by tier (VMs) — Artifactory 1/2/3/4/6, Nginx 1/2/2/2/3, Xray 1/2/2/2/3, RabbitMQ 1/3/3/3/3. <strong>Kubernetes Xray</strong> replica counts come from the <a href="https://github.com/jfrog/charts/tree/master/stable/xray/sizing" target="_blank">Xray Helm sizing YAMLs</a> — 2/4/4/7/7 (small→2xlarge), with per-container requests/limits copied from those files. <strong>JAS</strong> deployment differs by model: on <em>VMs</em>, JAS requires dedicated servers scaled by artifact volume — 1 node (≤100K, 6 vCPU/24 GB/500 GB), 2 nodes (≤1M, 8 vCPU/24 GB/300 GB), 4 nodes (≤2M), 8 nodes (≤10M) per the <a href="https://docs.jfrog.com/installation/docs/jfrog-advanced-security-prerequisites" target="_blank">JAS prerequisites table</a>. On <em>Kubernetes</em>, JAS runs within the Xray Helm chart (jascontextual / jasexposures from the same sizing YAML) — no separate node pool; ephemeral scan jobs run on the Xray pool or a tainted sub-pool.</p>
       <p><strong>Storage sizing</strong> (disk, IOPS, throughput) is from the <a href="https://jfrog.com/reference-architecture/self-managed/deployment/sizing/storage/" target="_blank">JFrog storage specification page</a>: Artifactory 500→1000 GB, Xray 100→200 GB, RabbitMQ 100 GB, JAS 300 GB; Artifactory DB = 1/3 of filestore at 4K–20K IOPS; Xray DB 500–2500 GB at 4K–12K IOPS.</p>
-      <p><strong>Co-location (VMs)</strong>: On VMs, Distribution co-locates on each Artifactory host (+2 vCPU / +2 GB / +200 GB per node — those numbers are added to the Artifactory row). AppTrust + UnifiedPolicy also co-locate on Artifactory VMs (+4 vCPU / +2 GB / +100 GB per node). Artifactory, Nginx, and Xray each require a dedicated VM per node. JAS on VMs requires dedicated servers separate from Xray. RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts.</p>
-      <p><strong>Co-location (Kubernetes)</strong>: On Kubernetes, Distribution is a separate StatefulSet pod with its own PVC (5 GB / 20 GB HA); pod limits 1 vCPU / 2 GB. AppTrust and UnifiedPolicy are separate pods that share the Artifactory node pool (no dedicated pool); their pod limits (AppTrust 1 CPU / 2 GB, UnifiedPolicy 0.5 CPU / 1 GB) are included in the pool capacity total. JAS runs within the Xray Helm chart (no extra node pool). <strong>Mission Control</strong> is bundled into the Artifactory router — no standalone node or database on any deployment model. <strong>Workers</strong> (4 CPU / 4 GB / 50 GB) and <strong>Runtime Security</strong> always get dedicated nodes. Workers and Runtime are not part of the <code>jfrog-platform</code> umbrella chart.</p>
+      <p><strong>Catalog + Valkey</strong>: cache-enabled Catalog is Catalog plus Valkey (do not mix bundled and bring-your-own cache). <em>VMs</em> follow the <a href="https://docs.jfrog.com/installation/docs/installing-catalog" target="_blank">Catalog Installation</a> table — standalone Catalog 6 ${r.cpuLabel} / 24 GB / 500 GB, standalone Valkey 4 / 12 / 200, combined Catalog+Valkey 10 / 36 / 700 (POC / single-node only). <strong>HA VMs always isolate Valkey</strong> onto dedicated 3-node VMs (4 / 12 / 200 each); Catalog HA is ≥2 standalone Catalog VMs. Combined Catalog+Valkey on the same VM is not used for HA. <em>Kubernetes</em> Catalog and Valkey pod limits come from the <a href="https://github.com/jfrog/charts/tree/master/stable/xray/sizing" target="_blank">Xray Helm sizing YAMLs</a>. Valkey HA is a <strong>3-node</strong> Sentinel cluster (same odd-quorum rule as RabbitMQ) and must use <strong>block</strong> storage, not NFS/EFS. <code>catalogdb</code> can share the Xray PostgreSQL instance (separate logical DB).</p>
+      <p><strong>Co-location (VMs)</strong>: On VMs, Distribution co-locates on each Artifactory host (+2 vCPU / +2 GB / +200 GB per node — those numbers are added to the Artifactory row). AppTrust + UnifiedPolicy also co-locate on Artifactory VMs (+4 vCPU / +2 GB / +100 GB per node). Artifactory, Nginx, and Xray each require a dedicated VM per node. JAS on VMs requires dedicated servers separate from Xray. RabbitMQ runs split (separate VMs) for Xray HA or &gt;100K artifacts. Catalog HA uses dedicated Catalog VMs; Valkey HA uses a separate 3-node Valkey cluster (4 vCPU / 12 GB / 200 GB). Combined Catalog+Valkey on one VM is POC-only.</p>
+      <p><strong>Co-location (Kubernetes)</strong>: On Kubernetes, Distribution is a separate StatefulSet pod with its own PVC (5 GB / 20 GB HA); pod limits 1 vCPU / 2 GB. AppTrust and UnifiedPolicy are separate pods that share the Artifactory node pool (no dedicated pool); their pod limits (AppTrust 1 CPU / 2 GB, UnifiedPolicy 0.5 CPU / 1 GB) are included in the pool capacity total. JAS runs within the Xray Helm chart (no extra node pool). Catalog and Valkey are separate pods (Helm-deployed cache). <strong>Mission Control</strong> is bundled into the Artifactory router — no standalone node or database on any deployment model. <strong>Workers</strong> (4 CPU / 4 GB / 50 GB) and <strong>Runtime Security</strong> always get dedicated nodes. Workers and Runtime are not part of the <code>jfrog-platform</code> umbrella chart.</p>
       <p><strong>Onprem</strong>: JFrog does not publish a dedicated onprem sizing table, so this calculator mirrors the cloud CPU/RAM as generic VM sizes.</p>
       <p><strong>VM vs Kubernetes</strong>: capacity numbers are identical — they describe the worker-node footprint either way. On Kubernetes, per-pod <code>requests</code>/<code>limits</code> come from the JFrog Helm chart sizing presets and are typically smaller than the full VM allocation.</p>
     </details>
