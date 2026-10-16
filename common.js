@@ -531,6 +531,71 @@ function fmtGB(n) {
   return n + " GB";
 }
 
+/* Component customization — store and track divergence from reference architecture */
+const CUSTOM_COMPONENTS_KEY = "jfrog-sizing-custom-components";
+const CUSTOM_VMTYPES_KEY = "jfrog-sizing-custom-vmtypes";
+
+function getCustomComponents() {
+  try {
+    const stored = localStorage.getItem(CUSTOM_COMPONENTS_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch {
+    return {};
+  }
+}
+
+function getCustomVMTypes() {
+  try {
+    const stored = localStorage.getItem(CUSTOM_VMTYPES_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCustomVMType(vmName, cpu, memGB, diskGB) {
+  const customs = getCustomVMTypes();
+  customs[vmName] = { cpu: parseFloat(cpu), memGB: parseFloat(memGB), diskGB: parseFloat(diskGB) };
+  localStorage.setItem(CUSTOM_VMTYPES_KEY, JSON.stringify(customs));
+}
+
+function clearCustomVMType(vmName) {
+  const customs = getCustomVMTypes();
+  delete customs[vmName];
+  localStorage.setItem(CUSTOM_VMTYPES_KEY, JSON.stringify(customs));
+}
+
+function getCustomVMOrOriginal(vmName, origCpu, origMemGB, origDiskGB) {
+  const customs = getCustomVMTypes();
+  if (!customs[vmName]) return { cpu: origCpu, memGB: origMemGB, diskGB: origDiskGB };
+  return customs[vmName];
+}
+
+function saveCustomComponent(componentName, cpu, memGB, diskGB) {
+  const customs = getCustomComponents();
+  customs[componentName] = { cpu: parseFloat(cpu), memGB: parseFloat(memGB), diskGB: parseFloat(diskGB) };
+  localStorage.setItem(CUSTOM_COMPONENTS_KEY, JSON.stringify(customs));
+}
+
+function clearCustomComponent(componentName) {
+  const customs = getCustomComponents();
+  delete customs[componentName];
+  localStorage.setItem(CUSTOM_COMPONENTS_KEY, JSON.stringify(customs));
+}
+
+function hasCustomization(componentName, origCpu, origMemGB, origDiskGB) {
+  const customs = getCustomComponents();
+  if (!customs[componentName]) return false;
+  const c = customs[componentName];
+  return Math.abs(c.cpu - origCpu) > 0.01 || Math.abs(c.memGB - origMemGB) > 0.01 || Math.abs(c.diskGB - origDiskGB) > 0.01;
+}
+
+function getCustomOrOriginal(componentName, origCpu, origMemGB, origDiskGB) {
+  const customs = getCustomComponents();
+  if (!customs[componentName]) return { cpu: origCpu, memGB: origMemGB, diskGB: origDiskGB };
+  return customs[componentName];
+}
+
 /* =============================================================================
    XLSX export. buildSizingXlsx(r) creates a multi-sheet workbook using SheetJS
    (window.XLSX, loaded from CDN). Sheets:
@@ -2037,6 +2102,97 @@ function downloadArtifact(r) {
   }
 }
 
+function showPdfExportModal(r) {
+  if (!r) return;
+  const sections = [
+    { id: "summary", label: "Deployment Summary", checked: true },
+    { id: "warnings", label: "Notes & Warnings", checked: true },
+    { id: "footprint", label: "Aggregate Footprint", checked: true },
+    { id: "k8s-plan", label: "Kubernetes Cluster Plan", checked: r.deployment === "k8s" },
+    { id: "storage-network", label: "Storage & Network Overview", checked: true },
+    { id: "components", label: "Per-Component Sizing", checked: true },
+    { id: "procurement", label: "VM Procurement List", checked: r.deployment === "vm" },
+    { id: "licensing", label: "Licensing", checked: true },
+    { id: "colocation", label: "Co-location Rules", checked: true },
+    { id: "storage-details", label: "Storage & Network Details", checked: true },
+    { id: "ports", label: "Ports & Connectivity", checked: true },
+    { id: "database", label: "Database Setup", checked: true },
+    { id: "external-services", label: "External Services (RabbitMQ/Valkey)", checked: true },
+    { id: "deployment", label: "Deployment Artifacts", checked: true }
+  ];
+
+  const list = document.getElementById("pdfSectionsList");
+  list.innerHTML = sections.map(s => `
+    <label style="display:flex; align-items:center; margin:8px 0; cursor:pointer;">
+      <input type="checkbox" class="pdf-section-checkbox" data-section="${s.id}" ${s.checked ? "checked" : ""} style="margin-right:8px; cursor:pointer;" />
+      <span>${s.label}</span>
+    </label>
+  `).join("");
+
+  document.getElementById("pdfExportModal").style.display = "flex";
+}
+
+function generatePdf(r) {
+  if (!r) return;
+
+  const checkedSections = Array.from(document.querySelectorAll(".pdf-section-checkbox:checked"))
+    .map(cb => cb.getAttribute("data-section"));
+
+  if (checkedSections.length === 0) {
+    alert("Please select at least one section to export.");
+    return;
+  }
+
+  const output = document.getElementById("output");
+  const allDetails = output.querySelectorAll("details, .panel");
+  const sectionMap = {};
+  let idx = 0;
+
+  allDetails.forEach(el => {
+    if (el.classList.contains("panel")) {
+      const summary = el.querySelector("summary");
+      if (summary) {
+        const text = summary.textContent.toLowerCase();
+        if (text.includes("deployment summary")) sectionMap["summary"] = el;
+        else if (text.includes("notes")) sectionMap["warnings"] = el;
+        else if (text.includes("aggregate footprint")) sectionMap["footprint"] = el;
+        else if (text.includes("kubernetes cluster plan")) sectionMap["k8s-plan"] = el;
+        else if (text.includes("storage & network") && !text.includes("—")) sectionMap["storage-network"] = el;
+        else if (text.includes("component") && text.includes("sizing")) sectionMap["components"] = el;
+        else if (text.includes("procurement")) sectionMap["procurement"] = el;
+        else if (text.includes("licensing")) sectionMap["licensing"] = el;
+        else if (text.includes("co-location")) sectionMap["colocation"] = el;
+        else if (text.includes("storage & network") && text.includes("—")) sectionMap["storage-details"] = el;
+        else if (text.includes("ports")) sectionMap["ports"] = el;
+        else if (text.includes("database")) sectionMap["database"] = el;
+        else if (text.includes("external") && (text.includes("rabbitmq") || text.includes("valkey"))) sectionMap["external-services"] = el;
+        else if (text.includes("deployment artifacts") || text.includes("helm") || text.includes("ansible")) sectionMap["deployment"] = el;
+      }
+    }
+  });
+
+  const selectedHtml = document.createElement("div");
+  selectedHtml.innerHTML = "<h1>JFrog Platform Site Sizing Report</h1>";
+
+  checkedSections.forEach(sectionId => {
+    if (sectionMap[sectionId]) {
+      selectedHtml.appendChild(sectionMap[sectionId].cloneNode(true));
+    }
+  });
+
+  const filename = `jfrog-site-sizing-${r.cloud}-${r.tier}-${new Date().toISOString().slice(0, 10)}.pdf`;
+  const element = selectedHtml;
+  const options = {
+    margin: 10,
+    filename: filename,
+    image: { type: "jpeg", quality: 0.98 },
+    html2canvas: { scale: 2 },
+    jsPDF: { orientation: "portrait", unit: "mm", format: "a4" }
+  };
+
+  html2pdf().set(options).from(element).save();
+}
+
 /* =============================================================================
    Calculator application — calculate() + render() + UI wiring.
    Single source for the calculator page (index.html). Handles both single and
@@ -2348,7 +2504,7 @@ function toggleConditionalFields() {
   const ha = document.querySelector('input[name="ha"]:checked').value === "yes";
   const isMulti = topology !== "single";
   const isWarm = topology === "active-passive" && document.querySelector('input[name="passiveScale"]:checked')?.value === "warm";
-  const showAllocation = licenseMode && licensePurchased > 1 && ha && isMulti && !isWarm;
+  const showAllocation = licenseMode && licensePurchased > 1 && ha && !isWarm;
 
   document.getElementById("licenseAllocationField").style.display = showAllocation ? "" : "none";
   document.getElementById("licenseWarmHint").style.display = licenseMode && isWarm ? "" : "none";
@@ -3369,6 +3525,48 @@ function render(r) {
     } else {
       html += k8sPlanCard(r.cloudLabel, k8sPlan(r.components));
     }
+
+    // VM type customization (K8s only)
+    if (r.deployment === "k8s") {
+      const availableVMs = Object.keys(REF_ARCH[r.cloud]).filter(key => !key.endsWith("Db"));
+      const vmSpecs = {};
+      availableVMs.forEach(key => {
+        const tiers = Object.keys(REF_ARCH[r.cloud][key]);
+        tiers.forEach(tier => {
+          const spec = REF_ARCH[r.cloud][key][tier];
+          vmSpecs[spec.instance] = spec;
+        });
+      });
+
+      const uniqueVMs = [...new Set(Object.keys(vmSpecs))];
+
+      html += `
+        <details class="panel">
+          <summary style="font-size:14px;">Customize node pool VM types</summary>
+          <p style="color:var(--muted); font-size:13px; margin-bottom:12px;">Select a node pool VM and customize its vCPU, RAM, or disk. Changes are highlighted in yellow.</p>
+          <table>
+            <thead><tr><th>VM Type</th><th>vCPU</th><th>RAM (GB)</th><th>Disk (GB)</th><th>Actions</th></tr></thead>
+            <tbody>
+              ${uniqueVMs.map(vmName => {
+                const spec = vmSpecs[vmName];
+                const custom = getCustomVMOrOriginal(vmName, spec.cpu, spec.memGB, spec.diskGB || 50);
+                const isCustom = custom.cpu !== spec.cpu || custom.memGB !== spec.memGB || (custom.diskGB || 50) !== (spec.diskGB || 50);
+                const bgColor = isCustom ? ' style="background-color:rgba(255,235,59,0.2);"' : '';
+                return `
+                  <tr${bgColor}>
+                    <td><code>${vmName}</code></td>
+                    <td contenteditable="true" data-vm="${vmName}" data-field="cpu" data-original="${spec.cpu}" title="Click to edit"${bgColor}>${custom.cpu}</td>
+                    <td contenteditable="true" data-vm="${vmName}" data-field="memGB" data-original="${spec.memGB}" title="Click to edit"${bgColor}>${custom.memGB}</td>
+                    <td contenteditable="true" data-vm="${vmName}" data-field="diskGB" data-original="${spec.diskGB || 50}" title="Click to edit"${bgColor}>${custom.diskGB || 50}</td>
+                    <td><button style="padding:4px 8px; font-size:11px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;" data-reset-vm="${vmName}">Reset</button></td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </details>
+      `;
+    }
   }
 
   // Storage + network row (shared across topology)
@@ -3406,14 +3604,19 @@ function render(r) {
           <tbody>
     `;
     comps.forEach(c => {
+      const customVals = getCustomOrOriginal(c.name, c.cpu, c.memGB, c.diskGB);
+      const isCustomized = hasCustomization(c.name, c.cpu, c.memGB, c.diskGB);
+      const cellStyle = isCustomized ? ' style="background-color:rgba(255,235,59,0.3);border:1px solid #fdd835;" class="customized-cell"' : '';
+      const customBadge = isCustomized ? '<span class="chip warn" style="font-size:9px;padding:2px 4px;">diverged</span>' : '';
+
       h += `
-        <tr>
-          <td><strong>${c.name}</strong></td>
+        <tr${cellStyle}>
+          <td><strong>${c.name}</strong>${customBadge}</td>
           <td>${c.replicas}</td>
-          <td>${c.cpu}</td>
-          <td>${c.memGB} GB</td>
-          <td>${fmtGB(c.diskGB)} <span class="hint">/ ${c.iops.toLocaleString()} IOPS</span></td>
-          <td><code>${fmtInstance(c.instance, r)}</code><br><span class="hint">${c.cpu} ${r.cpuLabel} / ${c.memGB} GB</span></td>
+          <td contenteditable="true" data-component="${c.name}" data-field="cpu" data-original="${c.cpu}" title="Click to edit CPU"${cellStyle}>${customVals.cpu}</td>
+          <td contenteditable="true" data-component="${c.name}" data-field="memGB" data-original="${c.memGB}" title="Click to edit RAM"${cellStyle}>${customVals.memGB} GB</td>
+          <td contenteditable="true" data-component="${c.name}" data-field="diskGB" data-original="${c.diskGB}" title="Click to edit Disk"${cellStyle}>${fmtGB(customVals.diskGB)} <span class="hint">/ ${c.iops.toLocaleString()} IOPS</span></td>
+          <td><code>${fmtInstance(c.instance, r)}</code><br><span class="hint">${customVals.cpu} ${r.cpuLabel} / ${customVals.memGB} GB</span></td>
           <td><span class="hint">${c.note}</span></td>
         </tr>
       `;
@@ -3586,7 +3789,7 @@ function render(r) {
           ${r.svc.curation && r.deployment === "vm" && (r.externalValkey || r.ha) ? `<tr><td><strong>Catalog / Valkey disks</strong></td><td>${sc.block} — standalone Catalog <strong>500 GB</strong> per VM; dedicated Valkey <strong>200 GB</strong> per VM (4 ${r.cpuLabel} / 12 GB). HA Valkey is a separate 3-node cluster.</td></tr>` : ""}
           <tr><td><strong>Load balancer / ingress</strong></td><td><strong>${r.lbDisplay}</strong> — ${r.externalLB ? (r.provisionNginx ? "Nginx provisioned behind the LB for advanced proxy features." : "no dedicated Nginx tier; the LB terminates TLS and routes to Artifactory's built-in router. On K8s the chart sets nginx.enabled:false and exposes the Artifactory service (LoadBalancer/NodePort or Ingress) for the LB to target.") : `bundled Nginx reverse proxy on a dedicated ${r.deployment === "k8s" ? "worker node per replica" : "VM per node"}.`}${r.deployment === "k8s" ? " On K8s, expose it via the cluster ingress / cloud LB service." : ""}${isAP ? " Provide a global/cross-site LB or DNS failover to direct traffic to the active site." : ""}${isAA ? " Provide a global LB / GSLB (geo or weighted DNS) to distribute clients across both active sites." : ""} <span class="hint">Config: <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/configure-the-reverse-proxy" target="_blank">Reverse Proxy / LB</a>${r.externalLB ? ` &middot; <a href="https://jfrog.com/help/r/jfrog-installation-setup-documentation/http-settings" target="_blank">HTTP Settings</a>` : ""}.</span></td></tr>
           <tr><td><strong>Network</strong></td><td>${NETWORK_REC[r.cloud]}</td></tr>
-          ${r.deployment === "k8s" ? `<tr><td><strong>Kubernetes</strong></td><td>${K8S_NOTES[r.cloud]}</td></tr>` : ""}
+          ${r.deployment === "k8s" ? `<tr><td><strong>Kubernetes</strong></td><td>${K8S_NOTES[r.cloud]}<br><br><strong>Storage class:</strong> a default <code>storageClass</code> must be set on the cluster to support Artifactory persistent volumes. Verify with <code>kubectl get storageclass</code> and set a default if needed.</td></tr>` : ""}
         </tbody>
       </table>
     </details>
@@ -3810,11 +4013,143 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
 
   const diagramBtn = document.getElementById("diagramBtn");
   if (diagramBtn) diagramBtn.onclick = () => downloadText(`jfrog-site-architecture-${r.cloud}-${r.tier}-${new Date().toISOString().slice(0, 10)}.svg`, buildArchitectureDiagram(r), "image/svg+xml");
+
+  // Wire up VM type customization
+  document.querySelectorAll("[data-vm][data-field]").forEach(cell => {
+    cell.addEventListener("blur", function() {
+      const vmName = this.getAttribute("data-vm");
+      const field = this.getAttribute("data-field");
+      let value = this.textContent.trim();
+      const origValue = parseFloat(this.getAttribute("data-original"));
+
+      if (isNaN(value)) {
+        this.textContent = origValue;
+        return;
+      }
+
+      value = parseFloat(value);
+
+      if (Math.abs(value - origValue) < 0.01) {
+        clearCustomVMType(vmName);
+        this.parentElement.style.backgroundColor = "";
+        this.textContent = origValue;
+        return;
+      }
+
+      const row = this.parentElement.parentElement;
+      const cells = row.querySelectorAll("[data-vm]");
+      let cpu = origValue, memGB = origValue, diskGB = origValue;
+
+      cells.forEach(c => {
+        const f = c.getAttribute("data-field");
+        const v = parseFloat(c.textContent.trim());
+        if (f === "cpu") cpu = v;
+        else if (f === "memGB") memGB = v;
+        else if (f === "diskGB") diskGB = v;
+      });
+
+      saveCustomVMType(vmName, cpu, memGB, diskGB);
+      this.parentElement.style.backgroundColor = "rgba(255,235,59,0.2)";
+      this.textContent = value;
+    });
+
+    cell.addEventListener("keydown", function(e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.blur();
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-reset-vm]").forEach(btn => {
+    btn.addEventListener("click", function() {
+      const vmName = this.getAttribute("data-reset-vm");
+      clearCustomVMType(vmName);
+      const row = this.closest("tr");
+      row.style.backgroundColor = "";
+      row.querySelectorAll("[data-vm]").forEach(cell => {
+        const origValue = cell.getAttribute("data-original");
+        cell.textContent = origValue;
+      });
+    });
+  });
+
+  // Wire up editable component cells
+  document.querySelectorAll("[data-component][data-field]").forEach(cell => {
+    cell.addEventListener("blur", function() {
+      const componentName = this.getAttribute("data-component");
+      const field = this.getAttribute("data-field");
+      let value = this.textContent.trim().replace(" GB", "").replace(" TB", "").split("/")[0].trim();
+      const origValue = parseFloat(this.getAttribute("data-original"));
+
+      if (isNaN(value)) {
+        this.textContent = origValue + (field !== "cpu" ? " GB" : "");
+        return;
+      }
+
+      value = parseFloat(value);
+
+      // Skip if value didn't change
+      if (Math.abs(value - origValue) < 0.01) {
+        clearCustomComponent(componentName);
+        this.parentElement.style.backgroundColor = "";
+        this.parentElement.style.border = "";
+        if (field === "memGB") this.textContent = origValue + " GB";
+        else if (field === "diskGB") this.textContent = fmtGB(origValue) + " " + (this.querySelector(".hint")?.textContent || "");
+        else this.textContent = origValue;
+        return;
+      }
+
+      // Get other fields' values
+      const row = this.parentElement.parentElement;
+      const cells = row.querySelectorAll("[data-component]");
+      let cpu = origValue, memGB = origValue, diskGB = origValue;
+
+      cells.forEach(c => {
+        const f = c.getAttribute("data-field");
+        const v = parseFloat(c.textContent.replace(" GB", "").replace(" TB", "").split("/")[0].trim());
+        if (f === "cpu") cpu = v;
+        else if (f === "memGB") memGB = v;
+        else if (f === "diskGB") diskGB = v;
+      });
+
+      if (field === "cpu") {
+        saveCustomComponent(componentName, value, memGB, diskGB);
+        this.textContent = value;
+      } else if (field === "memGB") {
+        saveCustomComponent(componentName, cpu, value, diskGB);
+        this.textContent = value + " GB";
+      } else if (field === "diskGB") {
+        saveCustomComponent(componentName, cpu, memGB, value);
+        const iopsText = this.querySelector(".hint")?.textContent || "";
+        this.textContent = fmtGB(value) + " <span class=\"hint\">" + iopsText + "</span>";
+      }
+
+      // Highlight as customized
+      this.parentElement.style.backgroundColor = "rgba(255,235,59,0.3)";
+      this.parentElement.style.border = "1px solid #fdd835";
+    });
+
+    cell.addEventListener("keydown", function(e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.blur();
+      }
+    });
+  });
 }
 
 /* ---------- Wire up ---------- */
 
 document.getElementById("exportBtn").addEventListener("click", () => downloadXlsx(lastResult));
+document.getElementById("exportPdfBtn").addEventListener("click", () => showPdfExportModal(lastResult));
+document.getElementById("pdfExportCancel").addEventListener("click", () => {
+  document.getElementById("pdfExportModal").style.display = "none";
+});
+document.getElementById("pdfExportConfirm").addEventListener("click", () => {
+  generatePdf(lastResult);
+  document.getElementById("pdfExportModal").style.display = "none";
+});
 document.getElementById("inputs").addEventListener("change", calculate);
 document.getElementById("inputs").addEventListener("input", (e) => {
   const topology = document.querySelector('input[name="topology"]:checked').value;

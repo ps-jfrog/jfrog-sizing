@@ -312,3 +312,22 @@
     border-left: 2px solid var(--accent); color: var(--muted);
     font-style: italic; font-size: 12px; background: rgba(64,191,106,0.04);
   }
+  /* Customizable component cells */
+  [data-component][data-field] {
+    cursor: text;
+    padding: 4px 6px;
+    border-radius: 2px;
+    transition: background-color 0.2s;
+  }
+  [data-component][data-field]:hover {
+    background-color: rgba(64, 191, 106, 0.1);
+  }
+  [data-component][data-field]:focus {
+    outline: none;
+    background-color: rgba(64, 191, 106, 0.15);
+    border: 1px solid var(--accent);
+  }
+  .customized-cell {
+    background-color: rgba(255, 235, 59, 0.2) !important;
+    border-left: 3px solid #fdd835 !important;
+  }
