@@ -4089,23 +4089,13 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
 
       value = parseFloat(value);
 
-      // Skip if value didn't change
-      if (Math.abs(value - origValue) < 0.01) {
-        clearCustomComponent(componentName);
-        this.parentElement.style.backgroundColor = "";
-        this.parentElement.style.border = "";
-        if (field === "memGB") this.textContent = origValue + " GB";
-        else if (field === "diskGB") this.textContent = fmtGB(origValue) + " " + (this.querySelector(".hint")?.textContent || "");
-        else this.textContent = origValue;
-        return;
-      }
+      // Get the row and all component cells
+      const row = this.closest("tr");
+      const componentCells = row.querySelectorAll("[data-component]");
+      let cpu, memGB, diskGB;
 
-      // Get other fields' values
-      const row = this.parentElement.parentElement;
-      const cells = row.querySelectorAll("[data-component]");
-      let cpu = origValue, memGB = origValue, diskGB = origValue;
-
-      cells.forEach(c => {
+      // Collect current values from all cells
+      componentCells.forEach(c => {
         const f = c.getAttribute("data-field");
         const v = parseFloat(c.textContent.replace(" GB", "").replace(" TB", "").split("/")[0].trim());
         if (f === "cpu") cpu = v;
@@ -4113,21 +4103,54 @@ GRANT ALL PRIVILEGES ON DATABASE &lt;db&gt; TO &lt;user&gt;;</blockquote>
         else if (f === "diskGB") diskGB = v;
       });
 
+      // Update the text display
       if (field === "cpu") {
-        saveCustomComponent(componentName, value, memGB, diskGB);
         this.textContent = value;
       } else if (field === "memGB") {
-        saveCustomComponent(componentName, cpu, value, diskGB);
         this.textContent = value + " GB";
       } else if (field === "diskGB") {
-        saveCustomComponent(componentName, cpu, memGB, value);
-        const iopsText = this.querySelector(".hint")?.textContent || "";
-        this.textContent = fmtGB(value) + " <span class=\"hint\">" + iopsText + "</span>";
+        const iopsHint = this.querySelector(".hint")?.outerHTML || "";
+        this.innerHTML = fmtGB(value) + " <span class=\"hint\">" + iopsHint + "</span>";
       }
 
-      // Highlight as customized
-      this.parentElement.style.backgroundColor = "rgba(255,235,59,0.3)";
-      this.parentElement.style.border = "1px solid #fdd835";
+      // Check if any value differs from original
+      let isCustomized = false;
+      componentCells.forEach(c => {
+        const f = c.getAttribute("data-field");
+        const orig = parseFloat(c.getAttribute("data-original"));
+        const current = parseFloat(c.textContent.replace(" GB", "").replace(" TB", "").split("/")[0].trim());
+        if (Math.abs(current - orig) > 0.01) {
+          isCustomized = true;
+        }
+      });
+
+      // Save or clear customization
+      if (isCustomized) {
+        saveCustomComponent(componentName, cpu, memGB, diskGB);
+      } else {
+        clearCustomComponent(componentName);
+      }
+
+      // Update row styling and badge
+      const nameCell = row.querySelector("td:first-child");
+      if (isCustomized) {
+        row.style.backgroundColor = "rgba(255,235,59,0.3)";
+        row.style.border = "1px solid #fdd835";
+        // Add badge if not already present
+        if (!nameCell.querySelector(".diverged-badge")) {
+          const badge = document.createElement("span");
+          badge.className = "chip warn diverged-badge";
+          badge.style.cssText = "font-size:9px;padding:2px 4px;margin-left:6px;";
+          badge.textContent = "diverged";
+          nameCell.appendChild(badge);
+        }
+      } else {
+        row.style.backgroundColor = "";
+        row.style.border = "";
+        // Remove badge
+        const badge = nameCell.querySelector(".diverged-badge");
+        if (badge) badge.remove();
+      }
     });
 
     cell.addEventListener("keydown", function(e) {
