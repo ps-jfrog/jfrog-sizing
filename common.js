@@ -571,6 +571,12 @@ function getCustomVMOrOriginal(vmName, origCpu, origMemGB, origDiskGB) {
   return customs[vmName];
 }
 
+function clearAllCustomizations() {
+  localStorage.removeItem(CUSTOM_COMPONENTS_KEY);
+  localStorage.removeItem(CUSTOM_VMTYPES_KEY);
+  alert("All customizations cleared. Refresh the page to see changes.");
+}
+
 function saveCustomComponent(componentName, cpu, memGB, diskGB) {
   const customs = getCustomComponents();
   customs[componentName] = { cpu: parseFloat(cpu), memGB: parseFloat(memGB), diskGB: parseFloat(diskGB) };
@@ -4173,6 +4179,7 @@ document.getElementById("pdfExportConfirm").addEventListener("click", () => {
   generatePdf(lastResult);
   document.getElementById("pdfExportModal").style.display = "none";
 });
+document.getElementById("clearCustomBtn").addEventListener("click", clearAllCustomizations);
 document.getElementById("inputs").addEventListener("change", calculate);
 document.getElementById("inputs").addEventListener("input", (e) => {
   const topology = document.querySelector('input[name="topology"]:checked').value;
