@@ -2177,26 +2177,109 @@ function generatePdf(r) {
     }
   });
 
+  // Recursively rebuild a node tree, converting every <details> (including the
+  // root itself, since sections ARE <details class="panel"> elements) into an
+  // always-expanded <div> — html2canvas can't rasterize collapsed <details>.
+  const flattenDetails = (node) => {
+    if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.COMMENT_NODE) {
+      return node.cloneNode(true);
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return node.cloneNode(true);
+
+    const isDetails = node.tagName === "DETAILS";
+    const isSummary = node.tagName === "SUMMARY";
+    const newEl = document.createElement(isDetails || isSummary ? "div" : node.tagName.toLowerCase());
+
+    Array.from(node.attributes).forEach(attr => {
+      if (attr.name !== "open") newEl.setAttribute(attr.name, attr.value);
+    });
+    if (isSummary) newEl.style.fontWeight = "bold";
+    // Code/YAML blocks are scrollable (max-height + overflow:auto) on screen —
+    // expand them fully for export instead of only showing the first ~300px,
+    // and avoid the overflow:auto region, which html2canvas handles poorly.
+    if (node.tagName === "BLOCKQUOTE") {
+      newEl.style.maxHeight = "none";
+      newEl.style.overflow = "visible";
+      // white-space:pre (no wrap) clips long YAML comment lines at the page
+      // edge instead of losing them — pre-wrap keeps indentation but wraps.
+      newEl.style.whiteSpace = "pre-wrap";
+      newEl.style.wordBreak = "break-all";
+    }
+
+    Array.from(node.childNodes).forEach(child => newEl.appendChild(flattenDetails(child)));
+    return newEl;
+  };
+
   const selectedHtml = document.createElement("div");
   selectedHtml.innerHTML = "<h1>JFrog Platform Site Sizing Report</h1>";
 
   checkedSections.forEach(sectionId => {
     if (sectionMap[sectionId]) {
-      selectedHtml.appendChild(sectionMap[sectionId].cloneNode(true));
+      selectedHtml.appendChild(flattenDetails(sectionMap[sectionId]));
     }
   });
 
   const filename = `jfrog-site-sizing-${r.cloud}-${r.tier}-${new Date().toISOString().slice(0, 10)}.pdf`;
-  const element = selectedHtml;
+
+  // html2canvas can't reliably measure/layout a detached element — attach it
+  // to the document (see body-hiding below) so rendering sees real dimensions,
+  // then remove it once the PDF has been generated.
+  // Width must match the PDF's usable area (A4 210mm - 2*10mm margin = 190mm
+  // @96dpi ≈ 718px) — html2pdf renders at that width regardless of the source
+  // element's own width, so a mismatch crops the right edge of the content.
+  // The app's dark theme (light text on dark panels) is driven by CSS custom
+  // properties inherited from :root — override them here so every descendant
+  // (panels, tables, chips) picks up a print-friendly light theme instead.
+  selectedHtml.id = "pdf-export-root";
+  selectedHtml.style.cssText = `
+    width:718px; padding:16px; box-sizing:border-box;
+    background:#ffffff; color:#1a1d23;
+    --bg:#ffffff; --panel:#f7f8fa; --panel-2:#eef0f3; --border:#d7dbe3;
+    --text:#1a1d23; --muted:#5b6472; --accent:#1f8f4d; --accent-2:#1f8f4d;
+    --warn:#a35c00; --danger:#b3362b; --chip:#eef0f3;
+  `;
+
+  // .chip.* and .notice.* use hardcoded colors (not the CSS variables above)
+  // tuned for the dark theme — light pastel text on near-black backgrounds.
+  // Override them here (scoped by #pdf-export-root for specificity) so they
+  // stay legible against the white export background.
+  const pdfStyleOverrides = document.createElement("style");
+  pdfStyleOverrides.textContent = `
+    #pdf-export-root .chip.warn   { color:#8a5a00; border-color:#e8c38a; background:#fdf0e0; }
+    #pdf-export-root .chip.danger { color:#a3332a; border-color:#eab3ac; background:#fbe4e1; }
+    #pdf-export-root .chip.ok     { color:#1f8f4d; border-color:#a9dfc0; background:#e3f5e8; }
+    #pdf-export-root .notice        { color:#8a5a00; background:#fdf0e0; }
+    #pdf-export-root .notice.danger { color:#8a2a20; background:#fbe4e1; }
+    #pdf-export-root .notice.info   { color:#1c5a96; background:#e6f0fb; }
+    #pdf-export-root .notice.ok     { color:#1f6b3a; background:#e3f5e8; }
+    #pdf-export-root .total-card { background:#f7f8fa; }
+  `;
+
+  // html2canvas's internal clone/capture becomes unreliable for a tall element
+  // sitting far from the document origin (which is what happens appending
+  // after all the existing calculator UI — thousands of px down). Sidestep it
+  // entirely by hiding all other body content during capture, so our export
+  // container is the only thing in the document and naturally sits at the top.
+  const bodyChildren = Array.from(document.body.children);
+  const prevDisplay = bodyChildren.map(el => el.style.display);
+  bodyChildren.forEach(el => { el.style.display = "none"; });
+
+  document.body.appendChild(pdfStyleOverrides);
+  document.body.appendChild(selectedHtml);
+
   const options = {
     margin: 10,
     filename: filename,
     image: { type: "jpeg", quality: 0.98 },
-    html2canvas: { scale: 2 },
+    html2canvas: { scale: 2, useCORS: true, scrollX: 0, scrollY: 0 },
     jsPDF: { orientation: "portrait", unit: "mm", format: "a4" }
   };
 
-  html2pdf().set(options).from(element).save();
+  html2pdf().set(options).from(selectedHtml).save().finally(() => {
+    selectedHtml.remove();
+    pdfStyleOverrides.remove();
+    bodyChildren.forEach((el, i) => { el.style.display = prevDisplay[i]; });
+  });
 }
 
 /* =============================================================================
