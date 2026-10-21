@@ -809,7 +809,7 @@ function downloadXlsx(r) {
     return;
   }
   const wb = buildSizingXlsx(r);
-  XLSX.writeFile(wb, `jfrog-site-sizing-${r.cloud}-${r.tier}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  XLSX.writeFile(wb, `${buildExportBasename(r)}.xlsx`);
 }
 
 /* =============================================================================
@@ -821,6 +821,28 @@ function downloadXlsx(r) {
 
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Filesystem-safe lowercase-hyphen slug for one filename segment.
+function slugifyFilenamePart(s) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function haTypeSlug(r) {
+  if (r.topology === "active-passive") return `active-passive-${r.passiveScale === "hot" ? "hot" : "warm"}`;
+  if (r.topology === "active-active") return "active-active";
+  return r.ha ? "ha" : "non-ha";
+}
+
+// <customer>-sizing-<cloud>-<size>-<ha type>, shared by the PDF and XLSX exports.
+function buildExportBasename(r) {
+  const customerEl = document.getElementById("customerName");
+  const customer = slugifyFilenamePart(customerEl && customerEl.value) || "customer";
+  return `${customer}-sizing-${r.cloud}-${r.tier}-${haTypeSlug(r)}`;
 }
 
 function findComp(r, name) {
@@ -2219,7 +2241,7 @@ function generatePdf(r) {
     }
   });
 
-  const filename = `jfrog-site-sizing-${r.cloud}-${r.tier}-${new Date().toISOString().slice(0, 10)}.pdf`;
+  const filename = `${buildExportBasename(r)}.pdf`;
 
   // html2canvas can't reliably measure/layout a detached element — attach it
   // to the document (see body-hiding below) so rendering sees real dimensions,

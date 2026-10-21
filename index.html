@@ -35,6 +35,11 @@
     <h2>Inputs</h2>
 
     <div class="field">
+      <label>Customer name <span class="tip-icon" data-tip="Optional. Used to name exported files, e.g. <customer>-sizing-<cloud>-<size>-<ha type>.pdf/.xlsx.">i</span></label>
+      <input type="text" id="customerName" placeholder="e.g. Acme Corp" autocomplete="off" />
+    </div>
+
+    <div class="field">
       <label>Target environment <span class="tip-icon" data-tip="Selects the per-cloud instance catalog, managed-DB SKUs, storage classes and network guidance. Private DC mirrors the cloud CPU/RAM as generic VMs.">i</span></label>
       <div class="radio-group quad" data-name="cloud">
         <label><input type="radio" name="cloud" value="aws" checked /> AWS</label>

@@ -79,6 +79,7 @@
     font-weight: 500;
   }
   .field input[type="number"],
+  .field input[type="text"],
   .field select {
     width: 100%;
     background: var(--panel-2);
@@ -90,6 +91,7 @@
     font-family: inherit;
   }
   .field input[type="number"]:focus,
+  .field input[type="text"]:focus,
   .field select:focus {
     outline: none;
     border-color: var(--accent);
